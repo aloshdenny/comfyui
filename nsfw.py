@@ -21,6 +21,9 @@ COMFY_HOST = "127.0.0.1"
 COMFY_PORT = 8188
 COMFY_URL = f"http://{COMFY_HOST}:{COMFY_PORT}"
 
+# Directory this script lives in — used to locate nsfw.json by default
+SCRIPT_DIR = Path(__file__).parent.resolve()
+
 DEFAULT_PROMPT = (
     "A young woman with long dark hair stands on a sunlit rooftop during the day, "
     "smiling warmly and looking slightly shy. She adjusts the collar of her light-colored "
@@ -250,8 +253,9 @@ def main():
     parser.add_argument("--prompt", default=DEFAULT_PROMPT, help="Positive prompt text")
     parser.add_argument("--negative", default=DEFAULT_NEGATIVE, help="Negative prompt")
     parser.add_argument("--seed", type=int, default=-1, help="Seed (-1 = random)")
-    parser.add_argument("--workflow", default="nsfw.json",
-                        help="Path to workflow JSON file")
+    parser.add_argument("--workflow",
+                        default=str(SCRIPT_DIR / "nsfw.json"),
+                        help="Path to workflow JSON file (default: nsfw.json next to this script)")
     parser.add_argument("--output-dir", default="./outputs", help="Where to save videos")
     args = parser.parse_args()
 

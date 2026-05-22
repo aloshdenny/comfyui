@@ -11,12 +11,6 @@ cd comfyui
 bash setup.sh
 ```
 
-### Copy ComfyUI JSON over to the ComfUI directory
-
-```
-cp nsfw.json ~/ComfyUI/
-```
-
 ### Launch ComfyUI
 
 ```
@@ -32,14 +26,14 @@ python main.py --listen 0.0.0.0 --port 8188 --gpu-only
 conda activate comfyui
 
 # Minimal — same image as both face and scene
-python nsfw.py --face /path/to/face.jpg --workflow ~/ComfyUI/nsfw.json
+python nsfw.py --face ~/her.jpg --workflow ~/nsfw.json
 
 # Full control
 python nsfw.py \
-  --face /path/to/face.jpg \
-  --scene /path/to/scene.jpg \
+  --face ~/her.jpg \
+  --scene ~/her.jpg \
   --prompt "Your custom prompt here" \
   --seed 42 \
-  --workflow ~/ComfyUI/nsfw.json \
+  --workflow ~/nsfw.json \
   --output-dir ./my_videos
 ```
