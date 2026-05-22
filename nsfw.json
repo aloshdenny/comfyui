@@ -78,7 +78,7 @@
         {"label": "MODEL", "name": "MODEL", "type": "MODEL", "links": [370]}
       ],
       "properties": {"Node name for S&R": "wanBlockSwap", "cnr_id": "wanblockswap"},
-      "widgets_values": [38, true, true]
+      "widgets_values": [28, true, true]
     },
     {
       "id": 54,
@@ -429,7 +429,7 @@
       ],
       "title": "Frames (reduced for 24GB)",
       "properties": {"Node name for S&R": "INTConstant", "cnr_id": "comfyui-kjnodes"},
-      "widgets_values": [25],
+      "widgets_values": [33],
       "color": "#1b4669",
       "bgcolor": "#29699c"
     },
@@ -522,22 +522,21 @@
     },
     {
       "id": 8,
-      "type": "VAEDecodeTiled",
+      "type": "VAEDecode",
       "pos": [1309.16, 599.96],
-      "size": [260, 82],
+      "size": [210, 46],
       "flags": {},
       "order": 24,
       "mode": 0,
       "inputs": [
         {"label": "samples", "name": "samples", "type": "LATENT", "link": 124},
-        {"label": "vae", "name": "vae", "type": "VAE", "link": 76},
-        {"label": "tile_size", "name": "tile_size", "type": "INT", "widget": {"name": "tile_size"}}
+        {"label": "vae", "name": "vae", "type": "VAE", "link": 76}
       ],
       "outputs": [
         {"label": "IMAGE", "name": "IMAGE", "type": "IMAGE", "slot_index": 0, "links": [378, 397]}
       ],
-      "properties": {"Node name for S&R": "VAEDecodeTiled", "cnr_id": "comfy-core", "ver": "0.3.45"},
-      "widgets_values": [256]
+      "properties": {"Node name for S&R": "VAEDecode", "cnr_id": "comfy-core", "ver": "0.3.45"},
+      "widgets_values": []
     },
     {
       "id": 253,
