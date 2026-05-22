@@ -1,8 +1,4 @@
 #!/usr/bin/env python3
-"""
-nsfw.py  —  Wan2.2 Remix runner
-"""
-
 import argparse, json, uuid, urllib.request, urllib.parse, time, sys, os
 from pathlib import Path
 from websocket import WebSocket
@@ -28,9 +24,6 @@ DEFAULT_NEGATIVE = (
     "毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
 )
 
-# ─────────────────────────────────────────────────────────────
-#  /object_info cache  (used ONLY for implicit widget slots)
-# ─────────────────────────────────────────────────────────────
 _OBJ_INFO: dict = {}
 
 def object_info() -> dict:
@@ -41,16 +34,9 @@ def object_info() -> dict:
     return _OBJ_INFO
 
 WIDGET_TYPES = {"INT", "FLOAT", "STRING", "BOOLEAN", "COMBO", "IMAGEUPLOAD"}
+SEED_CONTROL_TOKENS = {"randomize", "fixed", "increment", "increment (loop)"}
 
-def implicit_widget_names(class_type: str, explicit_names: set[str]) -> list[str]:
-    """
-    Return widget-slot names that /object_info knows about but that are NOT
-    present in the GUI node's inputs array.  These are slots whose values sit
-    in widgets_values but have no entry in the node JSON (e.g. CLIPVisionEncode's
-    'crop', Seed(rgthree)'s 'seed').
-    We return them in /object_info order so we can append them after the
-    explicit widget values are consumed.
-    """
+def implicit_widget_names(class_type: str, explicit_names: set) -> list:
     info = object_info()
     if class_type not in info:
         return []
@@ -66,31 +52,28 @@ def implicit_widget_names(class_type: str, explicit_names: set[str]) -> list[str
                 result.append(name)
     return result
 
-# ─────────────────────────────────────────────────────────────
-#  Core converter
-# ─────────────────────────────────────────────────────────────
+
+def bypass_nop_nodes(api: dict) -> dict:
+    """
+    wanBlockSwap (nodes 202, 203) is NOP'd by ComfyUI core.
+    Re-wire anything connected to their outputs directly to their model inputs.
+    """
+    for nop_id in ["202", "203"]:
+        if nop_id not in api:
+            continue
+        upstream = api[nop_id]["inputs"].get("model")
+        if upstream is None:
+            continue
+        for node in api.values():
+            for k, v in node["inputs"].items():
+                if v == [nop_id, 0]:
+                    node["inputs"][k] = upstream
+        del api[nop_id]
+        print(f"  Bypassed wanBlockSwap node {nop_id} → wired directly to {upstream}")
+    return api
+
 
 def gui_to_api(wf: dict) -> dict:
-    """
-    Convert GUI workflow JSON to ComfyUI API prompt format.
-
-    Key insight
-    -----------
-    The GUI node's `inputs` array is the ground truth for widget_values cursor
-    position.  Every entry in `inputs` that has `"widget": {...}` consumes
-    exactly ONE value from widgets_values, regardless of whether it is also
-    linked.  The cursor advances for EVERY widget-backed input in declaration
-    order.
-
-    If an input is linked  → emit a wire ref  [src_node_str, src_slot]
-    If an input is widget  → consume from widgets_values (even if linked,
-                             advance the cursor, but emit the wire ref)
-    If an input has neither widget nor link → skip (pure-wire optional slot)
-
-    After the explicit inputs are exhausted, any remaining widgets_values
-    entries belong to implicit slots (not in the inputs array).  We name
-    them using /object_info.
-    """
     link_map: dict[int, list] = {
         lnk[0]: [str(lnk[1]), lnk[2]]
         for lnk in wf.get("links", [])
@@ -108,40 +91,33 @@ def gui_to_api(wf: dict) -> dict:
         raw_wv = node.get("widgets_values", [])
         wv: list = list(raw_wv.values()) if isinstance(raw_wv, dict) else list(raw_wv)
 
-        explicit_inputs = node.get("inputs", [])   # ordered list from GUI JSON
+        explicit_inputs = node.get("inputs", [])
         inputs_out: dict = {}
         wv_cursor = 0
 
-        # ── Pass 1: walk the explicit inputs array in declaration order ──
+        def consume():
+            nonlocal wv_cursor
+            val = wv[wv_cursor] if wv_cursor < len(wv) else None
+            wv_cursor += 1
+            while wv_cursor < len(wv) and wv[wv_cursor] in SEED_CONTROL_TOKENS:
+                wv_cursor += 1
+            return val
+
         for inp in explicit_inputs:
             name       = inp["name"]
-            link_id    = inp.get("link")        # int or None
-            has_widget = "widget" in inp        # True  → value in widgets_values
+            link_id    = inp.get("link")
+            has_widget = "widget" in inp
 
             if link_id is not None:
-                # Connected via wire
                 if link_id in link_map:
                     inputs_out[name] = link_map[link_id]
-                # If this slot also has a widget backing, its wv entry is
-                # still present (GUI stores it as a "backup") — advance cursor.
                 if has_widget:
-                    wv_cursor += 1
-
+                    consume()
             elif has_widget:
-                # Pure widget (not connected)
-                if wv_cursor < len(wv):
-                    inputs_out[name] = wv[wv_cursor]
-                wv_cursor += 1
+                inputs_out[name] = consume()
 
-            # else: pure wire slot with no connection → omit (optional)
-
-        # ── Pass 2: remaining wv entries → implicit widget slots ──
-        # These are slots that /object_info knows about but that the GUI
-        # doesn't list in inputs[] (e.g. CLIPVisionEncode.crop, Seed.seed).
         explicit_names = {inp["name"] for inp in explicit_inputs}
-        implicit = implicit_widget_names(class_type, explicit_names)
-
-        for name in implicit:
+        for name in implicit_widget_names(class_type, explicit_names):
             if wv_cursor < len(wv):
                 inputs_out[name] = wv[wv_cursor]
                 wv_cursor += 1
@@ -150,27 +126,26 @@ def gui_to_api(wf: dict) -> dict:
 
     return api
 
-# ─────────────────────────────────────────────────────────────
-#  Patch user values into converted API prompt
-# ─────────────────────────────────────────────────────────────
 
 def patch_api(api, face_name, scene_name, pos_prompt, neg_prompt, seed):
     if "262" in api:
         api["262"]["inputs"]["image"] = face_name
     if "252" in api:
         api["252"]["inputs"]["image"] = scene_name
-    if "6"   in api:
+    if "6" in api:
         api["6"]["inputs"]["text"]    = pos_prompt
-    if "7"   in api:
+    if "7" in api:
         api["7"]["inputs"]["text"]    = neg_prompt
     if "105" in api:
         resolved = seed if seed != -1 else int(time.time() * 1000) % (2**31)
         api["105"]["inputs"]["seed"]  = resolved
+    if "261" in api and "crop" not in api["261"]["inputs"]:
+        api["261"]["inputs"]["crop"] = "center"
+    for nid in ["202", "203"]:
+        if nid in api:
+            api[nid]["inputs"]["use_non_blocking"] = False
     return api
 
-# ─────────────────────────────────────────────────────────────
-#  API helpers
-# ─────────────────────────────────────────────────────────────
 
 def upload_image(path: str, label: str) -> str:
     with open(path, "rb") as f:
@@ -247,9 +222,6 @@ def download(file_info: dict, out_dir: str) -> str:
     print(f"  Saved: {dest}")
     return dest
 
-# ─────────────────────────────────────────────────────────────
-#  Main
-# ─────────────────────────────────────────────────────────────
 
 def main():
     p = argparse.ArgumentParser()
@@ -273,14 +245,15 @@ def main():
         gui_wf = json.load(f)
 
     api = gui_to_api(gui_wf)
+    api = bypass_nop_nodes(api)
 
     if args.dump_api:
         with open("api_dump.json", "w") as f:
             json.dump(api, f, indent=2, ensure_ascii=False)
         print("  Written api_dump.json")
-        # Print the problem nodes for quick verification
-        for nid, label in [("57","KSamplerAdvanced#57"), ("58","KSamplerAdvanced#58"),
-                            ("105","Seed"), ("261","CLIPVisionEncode")]:
+        for nid, label in [("57", "KSamplerAdvanced#57"), ("58", "KSamplerAdvanced#58"),
+                            ("105", "Seed"), ("261", "CLIPVisionEncode"),
+                            ("54", "ModelSamplingSD3#54"), ("55", "ModelSamplingSD3#55")]:
             if nid in api:
                 print(f"\n  {label}:")
                 print(json.dumps(api[nid]["inputs"], indent=4, ensure_ascii=False))
