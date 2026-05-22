@@ -7,6 +7,7 @@ pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 \
   --index-url https://download.pytorch.org/whl/cu121
 
 pip install websocket-client
+pip install onnx
 
 # Verify GPU is visible
 python -c "import torch; print(torch.cuda.get_device_name(0)); print(torch.version.cuda)"
@@ -20,13 +21,31 @@ pip install -r requirements.txt
 # Custom nodes
 cd ~/ComfyUI/custom_nodes
 
+# Painter I2V node
+git clone https://github.com/princepainter/ComfyUI-PainterI2V.git
+pip install -r ComfyUI-PainterI2V/requirements.txt
+
+# RIFE Interpolation node
+git clone https://github.com/GACLove/ComfyUI-VFI.git
+pip install -r ComfyUI-VFI/requirements.txt
+
+# Place the nodes:
+# Primary location (ComfyUI models dir)
+mkdir -p ~/ComfyUI/models/rife
+cp ~/ComfyUI/custom_nodes/ComfyUI-Frame-Interpolation/ckpts/rife/flownet.pkl \
+   ~/ComfyUI/models/rife/flownet.pkl
+
+# Fallback location (inside the node's own folder)
+mkdir -p ~/ComfyUI/custom_nodes/ComfyUI-VFI/rife/train_log
+cp ~/ComfyUI/models/rife/flownet.pkl \
+   ~/ComfyUI/custom_nodes/ComfyUI-VFI/rife/train_log/flownet.pkl
+
 # VideoHelperSuite — VHS_VideoCombine nodes
-git clone https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git
-pip install -r ComfyUI-VideoHelperSuite/requirements.txt
+git clone https://github.com/ShmuelRonen/ComfyUI-VideoUpscale_WithModel.git
+pip install -r ComfyUI-VideoUpscale_WithModel/requirements.txt
 
 # WanBlockSwap — wanBlockSwap nodes
-git clone https://github.com/kijai/ComfyUI-WanVideoWrapper.git
-pip install -r ComfyUI-WanVideoWrapper/requirements.txt
+git clone https://github.com/orssorbit/ComfyUI-wanBlockswap.git
 
 # KJNodes — INTConstant nodes
 git clone https://github.com/kijai/ComfyUI-KJNodes.git
@@ -39,16 +58,6 @@ pip install -r ComfyUI_essentials/requirements.txt
 # rgthree — Seed (rgthree) node
 git clone https://github.com/rgthree/rgthree-comfy.git
 pip install -r rgthree-comfy/requirements.txt
-
-# PainterI2V — the PainterI2V (Wan2.2) node
-# This is likely from WanVideoWrapper above; if not found, also try:
-git clone https://github.com/WASasquatch/PowerNoiseSuite.git || true
-
-# RIFE Interpolation node
-git clone https://github.com/Fannovel16/ComfyUI-Frame-Interpolation.git
-cd ComfyUI-Frame-Interpolation
-python install.py
-cd ..
 
 # Video Upscale With Model node
 git clone https://github.com/jags111/efficiency-nodes-comfyui.git || true

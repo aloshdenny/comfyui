@@ -58,7 +58,7 @@
         {"label": "MODEL", "name": "MODEL", "type": "MODEL", "links": [368]}
       ],
       "properties": {"Node name for S&R": "wanBlockSwap", "cnr_id": "wanblockswap"},
-      "widgets_values": [28, true, true]
+      "widgets_values": [38, true, true]
     },
     {
       "id": 203,
@@ -223,7 +223,7 @@
       ],
       "title": "BlockSwap (24GB optimized)",
       "properties": {"Node name for S&R": "INTConstant", "cnr_id": "comfyui-kjnodes"},
-      "widgets_values": [28],
+      "widgets_values": [38],
       "color": "#1b4669",
       "bgcolor": "#29699c"
     },
@@ -429,7 +429,7 @@
       ],
       "title": "Frames (reduced for 24GB)",
       "properties": {"Node name for S&R": "INTConstant", "cnr_id": "comfyui-kjnodes"},
-      "widgets_values": [49],
+      "widgets_values": [33],
       "color": "#1b4669",
       "bgcolor": "#29699c"
     },
