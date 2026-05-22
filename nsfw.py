@@ -141,9 +141,6 @@ def patch_api(api, face_name, scene_name, pos_prompt, neg_prompt, seed):
         api["105"]["inputs"]["seed"]  = resolved
     if "261" in api and "crop" not in api["261"]["inputs"]:
         api["261"]["inputs"]["crop"] = "center"
-    for nid in ["202", "203"]:
-        if nid in api:
-            api[nid]["inputs"]["use_non_blocking"] = False
     return api
 
 
@@ -245,7 +242,8 @@ def main():
         gui_wf = json.load(f)
 
     api = gui_to_api(gui_wf)
-    api = bypass_nop_nodes(api)
+    # NOTE: do NOT bypass nodes 202/203 (wanBlockSwap) — they offload 38/40
+    # transformer blocks to CPU RAM and are essential for fitting in 23 GB VRAM.
 
     if args.dump_api:
         with open("api_dump.json", "w") as f:
