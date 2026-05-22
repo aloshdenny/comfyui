@@ -189,7 +189,7 @@
     },
     {
       "id": 262,
-      "type": "ImageLoader",
+      "type": "LoadImage",
       "pos": [-130, 480],
       "size": [260, 310],
       "flags": {},
@@ -201,11 +201,10 @@
       ],
       "outputs": [
         {"label": "IMAGE", "name": "IMAGE", "type": "IMAGE", "links": [446]},
-        {"label": "MASK", "name": "MASK", "type": "MASK"},
-        {"label": "PATH", "name": "PATH", "type": "PATH"}
+        {"label": "MASK", "name": "MASK", "type": "MASK"}
       ],
       "title": "Face Image Loader",
-      "properties": {"Node name for S&R": "ImageLoader"},
+      "properties": {"Node name for S&R": "LoadImage"},
       "widgets_values": ["her.jpg", "image"]
     },
     {
@@ -331,7 +330,7 @@
     },
     {
       "id": 252,
-      "type": "ImageLoader",
+      "type": "LoadImage",
       "pos": [911.31, -92.15],
       "size": [326.16, 346],
       "flags": {},
@@ -343,11 +342,10 @@
       ],
       "outputs": [
         {"label": "IMAGE", "name": "IMAGE", "type": "IMAGE", "links": [392]},
-        {"label": "MASK", "name": "MASK", "type": "MASK"},
-        {"label": "PATH", "name": "PATH", "type": "PATH", "links": []}
+        {"label": "MASK", "name": "MASK", "type": "MASK"}
       ],
       "title": "Scene / Start Frame Loader",
-      "properties": {"Node name for S&R": "ImageLoader"},
+      "properties": {"Node name for S&R": "LoadImage"},
       "widgets_values": ["her.jpg", "image"]
     },
     {

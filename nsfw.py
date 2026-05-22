@@ -131,6 +131,79 @@ def download_output(file_info: dict, out_dir: str):
     return dest
 
 
+def _ui_graph_to_api_prompt(wf: dict) -> dict:
+    """
+    Convert a ComfyUI UI/graph-format workflow (exported via 'Save (API format)'
+    or the nodes/links structure) into the API prompt dict that /prompt expects.
+
+    API format: { "<node_id>": { "class_type": "...", "inputs": { ... } }, ... }
+
+    Widget values that are linked (i.e., the input has a "link" field) are
+    replaced by the [source_node_id, output_slot] list that ComfyUI expects.
+    Widget values that are NOT linked are kept as plain values.
+    """
+    # Build a lookup: link_id -> [source_node_id, source_slot]
+    link_map: dict[int, list] = {}
+    for link in wf.get("links", []):
+        # link format: [link_id, src_node_id, src_slot, dst_node_id, dst_slot, type]
+        link_id, src_node_id, src_slot = link[0], link[1], link[2]
+        link_map[link_id] = [str(src_node_id), src_slot]
+
+    api_prompt: dict = {}
+    for node in wf.get("nodes", []):
+        node_id = str(node["id"])
+        class_type = node.get("type", "")
+
+        # Skip purely visual / reroute nodes
+        if class_type in ("Note", "Reroute"):
+            continue
+
+        # Collect widget inputs: inputs that have a "widget" key but no "link"
+        # are widget-backed; inputs that have a "link" come from another node.
+        inputs: dict = {}
+
+        raw_inputs = node.get("inputs", [])
+        widgets_values = node.get("widgets_values", [])
+
+        # Separate linked inputs from widget-backed inputs
+        widget_cursor = 0
+        for inp in raw_inputs:
+            name = inp["name"]
+            link_id = inp.get("link")
+            has_widget = "widget" in inp
+
+            if link_id is not None:
+                # Connected — resolve to [source_node_id, output_slot]
+                if link_id in link_map:
+                    inputs[name] = link_map[link_id]
+                # If has_widget but also linked, the widget value is overridden;
+                # still advance cursor so we don't desync.
+                if has_widget:
+                    if isinstance(widgets_values, list):
+                        widget_cursor += 1
+            elif has_widget:
+                # Not connected, pull from widgets_values
+                if isinstance(widgets_values, dict):
+                    widget_name = inp["widget"]["name"]
+                    inputs[name] = widgets_values.get(widget_name)
+                else:
+                    if widget_cursor < len(widgets_values):
+                        inputs[name] = widgets_values[widget_cursor]
+                    widget_cursor += 1
+
+        # Some nodes (e.g. KSamplerAdvanced, CLIPTextEncode) have widget-only
+        # parameters not represented as explicit inputs — drain remaining
+        # widgets_values into the outputs dict only when inputs list is empty
+        # or all inputs are already consumed. For safety we skip extra values.
+
+        api_prompt[node_id] = {
+            "class_type": class_type,
+            "inputs": inputs,
+        }
+
+    return api_prompt
+
+
 def build_workflow(
     workflow_path: str,
     face_image_name: str,
@@ -139,18 +212,13 @@ def build_workflow(
     negative_prompt: str,
     seed: int = -1,
 ) -> dict:
+    """Load the UI-format workflow JSON, patch values, and convert to API format."""
     with open(workflow_path) as f:
         wf = json.load(f)
 
     nodes = {str(n["id"]): n for n in wf["nodes"]}
 
-    def set_widget(node_id, widget_key_or_index, value):
-        node = nodes[str(node_id)]
-        wv = node["widgets_values"]
-        if isinstance(wv, dict):
-            wv[widget_key_or_index] = value
-        else:
-            wv[widget_key_or_index] = value
+    # --- Patch widget values in the UI graph ---
 
     # Face image loader (node 262)
     nodes["262"]["widgets_values"][0] = face_image_name
@@ -164,12 +232,14 @@ def build_workflow(
     # Negative prompt (node 7)
     nodes["7"]["widgets_values"][0] = negative_prompt
 
-    # Seed (node 105) — index 0; -1 = random
+    # Seed (node 105) — widgets_values: [seed, "", "", ""]
     nodes["105"]["widgets_values"][0] = seed
 
-    # Rebuild node list (some loaders may use dict widgets_values)
+    # Write patched nodes back
     wf["nodes"] = list(nodes.values())
-    return wf
+
+    # --- Convert UI graph → API prompt format ---
+    return _ui_graph_to_api_prompt(wf)
 
 
 def main():
