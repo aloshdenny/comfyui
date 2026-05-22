@@ -1,3 +1,21 @@
+# Clone the repo
+
+```
+git clone https://github.com/aloshdenny/comfyui.git
+```
+
+# Run Setup
+
+```
+bash setup.sh
+```
+
+# Copy ComfyUI JSON over to the ComfUI directory
+
+```
+cp nsfw.json ~/ComfyUI/
+```
+
 # Launch ComfyUI
 
 ```
@@ -13,14 +31,14 @@ python main.py --listen 0.0.0.0 --port 8188 --gpu-only
 conda activate comfyui
 
 # Minimal — same image as both face and scene
-python run_wan22_remix.py --face /path/to/face.jpg --workflow ~/ComfyUI/wan22_remix.json
+python nsfw.py --face /path/to/face.jpg --workflow ~/ComfyUI/nsfw.json
 
 # Full control
-python run_wan22_remix.py \
+python nsfw.py \
   --face /path/to/face.jpg \
   --scene /path/to/scene.jpg \
   --prompt "Your custom prompt here" \
   --seed 42 \
-  --workflow ~/ComfyUI/wan22_remix.json \
+  --workflow ~/ComfyUI/nsfw.json \
   --output-dir ./my_videos
 ```
