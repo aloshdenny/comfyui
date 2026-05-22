@@ -34,8 +34,6 @@ def object_info() -> dict:
     return _OBJ_INFO
 
 WIDGET_TYPES = {"INT", "FLOAT", "STRING", "BOOLEAN", "COMBO", "IMAGEUPLOAD"}
-
-# Tokens ComfyUI injects after INT seed widgets — never sent to backend
 SEED_CONTROL_TOKENS = {"randomize", "fixed", "increment", "increment (loop)"}
 
 def implicit_widget_names(class_type: str, explicit_names: set) -> list:
@@ -53,7 +51,6 @@ def implicit_widget_names(class_type: str, explicit_names: set) -> list:
             if t in WIDGET_TYPES:
                 result.append(name)
     return result
-
 
 
 def bypass_nop_nodes(api: dict) -> dict:
@@ -74,6 +71,7 @@ def bypass_nop_nodes(api: dict) -> dict:
         del api[nop_id]
         print(f"  Bypassed wanBlockSwap node {nop_id} → wired directly to {upstream}")
     return api
+
 
 def gui_to_api(wf: dict) -> dict:
     link_map: dict[int, list] = {
@@ -101,12 +99,10 @@ def gui_to_api(wf: dict) -> dict:
             nonlocal wv_cursor
             val = wv[wv_cursor] if wv_cursor < len(wv) else None
             wv_cursor += 1
-            # Skip seed-control tokens injected by the GUI frontend
             while wv_cursor < len(wv) and wv[wv_cursor] in SEED_CONTROL_TOKENS:
                 wv_cursor += 1
             return val
 
-        # Pass 1: explicit inputs in GUI declaration order
         for inp in explicit_inputs:
             name       = inp["name"]
             link_id    = inp.get("link")
@@ -116,12 +112,10 @@ def gui_to_api(wf: dict) -> dict:
                 if link_id in link_map:
                     inputs_out[name] = link_map[link_id]
                 if has_widget:
-                    consume()           # skip the backed-up widget value
+                    consume()
             elif has_widget:
                 inputs_out[name] = consume()
-            # pure wire with no connection → omit
 
-        # Pass 2: implicit widget slots (e.g. CLIPVisionEncode.crop)
         explicit_names = {inp["name"] for inp in explicit_inputs}
         for name in implicit_widget_names(class_type, explicit_names):
             if wv_cursor < len(wv):
@@ -138,20 +132,15 @@ def patch_api(api, face_name, scene_name, pos_prompt, neg_prompt, seed):
         api["262"]["inputs"]["image"] = face_name
     if "252" in api:
         api["252"]["inputs"]["image"] = scene_name
-    if "6"   in api:
+    if "6" in api:
         api["6"]["inputs"]["text"]    = pos_prompt
-    if "7"   in api:
+    if "7" in api:
         api["7"]["inputs"]["text"]    = neg_prompt
     if "105" in api:
         resolved = seed if seed != -1 else int(time.time() * 1000) % (2**31)
         api["105"]["inputs"]["seed"]  = resolved
-    # Ensure CLIPVisionEncode always has crop (implicit slot fallback)
     if "261" in api and "crop" not in api["261"]["inputs"]:
         api["261"]["inputs"]["crop"] = "center"
-    # wanBlockSwap nodes — inject missing use_non_blocking
-    for nid in ["202", "203"]:
-        if nid in api:
-            api[nid]["inputs"]["use_non_blocking"] = False
     return api
 
 
@@ -214,18 +203,55 @@ def get_outputs(prompt_id: str) -> list:
     with urllib.request.urlopen(f"{COMFY_URL}/history/{prompt_id}") as r:
         history = json.loads(r.read())
     out = []
+    if prompt_id in history:
+        for node_out in history[prompt_id]["outputs"].values():
+            for key in ("gifs", "videos", "images"):
+                out.extend(node_out.get(key, []))
+    return out
+
+
+def download(file_info: dict, out_dir: str) -> str:
+    fn  = file_info["filename"]
+    sub = file_info.get("subfolder", "")
+    params = urllib.parse.urlencode({"filename": fn, "subfolder": sub, "type": "output"})
+    dest = os.path.join(out_dir, fn)
+    urllib.request.urlretrieve(f"{COMFY_URL}/view?{params}", dest)
+    print(f"  Saved: {dest}")
+    return dest
+
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("--face",       required=True)
+    p.add_argument("--scene",      default=None)
+    p.add_argument("--prompt",     default=DEFAULT_PROMPT)
+    p.add_argument("--negative",   default=DEFAULT_NEGATIVE)
+    p.add_argument("--seed",       type=int, default=-1)
+    p.add_argument("--workflow",   default=str(SCRIPT_DIR / "nsfw.json"))
+    p.add_argument("--output-dir", default="./outputs")
+    p.add_argument("--dump-api",   action="store_true",
+                   help="Write api_dump.json and exit (for debugging)")
+    args = p.parse_args()
+
+    scene_path = args.scene or args.face
+    os.makedirs(args.output_dir, exist_ok=True)
+
+    print("\n=== Wan2.2 Remix Runner ===")
+    print("\n[0/4] Converting workflow...")
     with open(args.workflow) as f:
         gui_wf = json.load(f)
 
     api = gui_to_api(gui_wf)
-    api = bypass_nop_nodes(api)
+    # NOTE: do NOT bypass nodes 202/203 (wanBlockSwap) — they offload 38/40
+    # transformer blocks to CPU RAM and are essential for fitting in 23 GB VRAM.
 
     if args.dump_api:
         with open("api_dump.json", "w") as f:
             json.dump(api, f, indent=2, ensure_ascii=False)
         print("  Written api_dump.json")
-        for nid, label in [("57","KSamplerAdvanced#57"), ("58","KSamplerAdvanced#58"),
-                            ("105","Seed"), ("261","CLIPVisionEncode")]:
+        for nid, label in [("57", "KSamplerAdvanced#57"), ("58", "KSamplerAdvanced#58"),
+                            ("105", "Seed"), ("261", "CLIPVisionEncode"),
+                            ("54", "ModelSamplingSD3#54"), ("55", "ModelSamplingSD3#55")]:
             if nid in api:
                 print(f"\n  {label}:")
                 print(json.dumps(api[nid]["inputs"], indent=4, ensure_ascii=False))
