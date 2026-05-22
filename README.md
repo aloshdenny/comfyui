@@ -1,22 +1,23 @@
-# Clone the repo
+### Clone the repo
 
 ```
 git clone https://github.com/aloshdenny/comfyui.git
 ```
 
-# Run Setup
+### Run Setup
 
 ```
+cd comfyui
 bash setup.sh
 ```
 
-# Copy ComfyUI JSON over to the ComfUI directory
+### Copy ComfyUI JSON over to the ComfUI directory
 
 ```
 cp nsfw.json ~/ComfyUI/
 ```
 
-# Launch ComfyUI
+### Launch ComfyUI
 
 ```
 # In one terminal — keep this running
@@ -25,7 +26,7 @@ cd ~/ComfyUI
 python main.py --listen 0.0.0.0 --port 8188 --gpu-only
 ```
 
-# Run the Script
+### Run the Script
 
 ```
 conda activate comfyui
