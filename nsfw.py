@@ -9,14 +9,7 @@ COMFY_URL   = f"http://{COMFY_HOST}:{COMFY_PORT}"
 SCRIPT_DIR  = Path(__file__).parent.resolve()
 
 DEFAULT_PROMPT = (
-    "A young woman with long dark hair stands on a sunlit rooftop during the day, "
-    "smiling warmly and looking slightly shy. She adjusts the collar of her light-colored "
-    "blouse, smoothing it neatly with both hands in a gentle, composed gesture. Her expression "
-    "is sweet and natural, radiating confidence and ease. Soft natural daylight falls across "
-    "her face, creating a warm and cinematic mood. Industrial railings and city rooftops fill "
-    "the background, with the camera gently focused on her face and upper body, capturing fine "
-    "detail and subtle emotional nuance. Photorealistic, ultra-high detail, natural skin texture, "
-    "elegant composition."
+    "A young woman with long dark hair stands on a rooftop during daytime, looking slightly shy but smiling softly. She gently unbuttons the top of her light-colored shirt, revealing her Breasts. Her hands move slowly and hesitantly, as if she’s a little nervous while adjusting her outfit. Her expression is sweet, reserved, and warm, with natural daylight creating a soft, ultra-realistic mood. Industrial railings and rooftops sit in the background, with the camera focused gently on her upper body and subtle, emotional details."
 )
 DEFAULT_NEGATIVE = (
     "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，"
