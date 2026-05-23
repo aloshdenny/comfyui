@@ -876,7 +876,7 @@
       "widgets_values": [
         "Wan2.2_Remix_NSFW_i2v_14b_high_lighting_v2.0.safetensors",
         "bf16",
-        "fp8_e4m3fn_scaled",
+        "fp8_e4m3fn",
         "offload_device",
         "sdpa"
       ],
@@ -1015,7 +1015,7 @@
       "widgets_values": [
         "Wan2.2_Remix_NSFW_i2v_14b_low_lighting_v2.0.safetensors",
         "bf16",
-        "fp8_e4m3fn_scaled",
+        "fp8_e4m3fn",
         "offload_device",
         "sdpa"
       ],
@@ -1154,7 +1154,7 @@
       "widgets_values": [
         "Wan2.2_Remix_NSFW_i2v_14b_low_lighting_v2.0.safetensors",
         "bf16",
-        "fp8_e4m3fn_scaled",
+        "fp8_e4m3fn",
         "offload_device",
         "sdpa"
       ],
@@ -1373,7 +1373,7 @@
       "widgets_values": [
         "Wan2.2_Remix_NSFW_i2v_14b_high_lighting_v2.0.safetensors",
         "bf16",
-        "fp8_e4m3fn_scaled",
+        "fp8_e4m3fn",
         "offload_device",
         "sdpa"
       ],
