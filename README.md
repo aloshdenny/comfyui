@@ -26,20 +26,20 @@ python main.py --lowvram
 conda activate comfyui
 
 # Minimal — face image used for both identity and start frame
-python nsfw.py --face ~/her.jpg
+python nsfw.py --face her.jpg
 
 # Separate face (CLIPVision identity) and scene (video start frame)
-python nsfw.py --face ~/her.jpg --scene ~/scene.jpg
+python nsfw.py --face her.jpg --scene scene.jpg
 
 # Full control
 python nsfw.py \
-  --face ~/her.jpg \
-  --scene ~/scene.jpg \
+  --face her.jpg \
+  --scene scene.jpg \
   --prompt "Your custom prompt here" \
   --negative "worst quality, static" \
   --seed 42 \
   --duration 20 \
-  --workflow ~/nsfw.json \
+  --workflow nsfw.json \
   --output-dir ./my_videos
 ```
 

@@ -3448,10 +3448,10 @@
         "widget_ue_connectable": {}
       },
       "widgets_values": [
-        "nsfw_wan_umt5-xxl_fp8_scaled.safetensors",
+        "umt5-xxl-enc-bf16.safetensors",
         "bf16",
         "offload_device",
-        "disabled"
+        "fp8_e4m3fn"
       ],
       "shape": 1
     },

@@ -156,8 +156,23 @@ print('LoRA downloaded to:', path)
 # Flatten out of Lightx2v/ subdir if needed
 mv ~/ComfyUI/models/loras/Lightx2v/*.safetensors ~/ComfyUI/models/loras/ 2>/dev/null || true
 
-# T5 encoder symlink: WanVideoWrapper looks in models/text_encoders/
-# We re-use the NSFW encoder already downloaded to models/clip/
+# T5 encoder for WanVideoWrapper
+# NOTE: WanVideoWrapper's LoadWanVideoT5TextEncoder does NOT accept fp8-scaled models.
+# Must use the standard bf16 file (~11.4 GB) — quantized to fp8 at load time in the workflow.
+# Source: Kijai/WanVideo_comfy (same repo as the LoRA)
 mkdir -p ~/ComfyUI/models/text_encoders
-ln -sf ~/ComfyUI/models/clip/nsfw_wan_umt5-xxl_fp8_scaled.safetensors \
-        ~/ComfyUI/models/text_encoders/nsfw_wan_umt5-xxl_fp8_scaled.safetensors
+python3 -c "
+import os
+from huggingface_hub import hf_hub_download
+path = hf_hub_download(
+    repo_id='Kijai/WanVideo_comfy',
+    filename='umt5-xxl-enc-bf16.safetensors',
+    local_dir=os.path.expanduser('~/ComfyUI/models/text_encoders'),
+    local_dir_use_symlinks=False,
+)
+print('T5 encoder downloaded to:', path)
+"
+
+# ── Launch ─────────────────────────────────────────────────────
+cd ~/ComfyUI
+python main.py --listen 0.0.0.0 --port 8188 --lowvram
