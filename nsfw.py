@@ -1,17 +1,13 @@
 #!/usr/bin/env python3
 """
-nsfw.py  —  Wan2.2 Remix iterative video runner
+nsfw.py  —  Wan2.2 Remix NSFW 20-second video runner
+             (ComfyUI-WanVideoWrapper backend)
 
-Usage (single clip):
+Usage:
     python nsfw.py --face her.jpg
-
-Usage (chained clips → long video):
-    python nsfw.py --face her.jpg --iterations 8
-
-Each clip uses the last frame of the previous clip as its start frame,
-producing a seamless long video when concatenated.
+    python nsfw.py --face her.jpg --scene scene.jpg --prompt "..." --duration 20
 """
-import argparse, copy, json, os, subprocess, sys, time, uuid
+import argparse, copy, json, os, sys, time, uuid
 import urllib.request, urllib.parse
 from pathlib import Path
 from websocket import WebSocket
@@ -24,10 +20,6 @@ COMFY_PORT  = 8188
 COMFY_URL   = f"http://{COMFY_HOST}:{COMFY_PORT}"
 SCRIPT_DIR  = Path(__file__).parent.resolve()
 
-# Wan2.2 VAE temporal stride: output frames must satisfy (F - 1) % 4 == 0
-# Valid values: 5, 9, 13, 17, 21, 25, 29, 33, 37, 41, 45, 49 …
-# After RIFE 21 fps → 30 fps interpolation each clip is multiplied by 30/21.
-
 DEFAULT_PROMPT = (
     "A young woman with long dark hair stands on a rooftop during daytime, "
     "looking slightly shy but smiling softly. She gently unbuttons the top of "
@@ -39,10 +31,16 @@ DEFAULT_PROMPT = (
     "emotional details."
 )
 DEFAULT_NEGATIVE = (
-    "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，"
-    "低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，"
-    "毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
+    "Vivid tones, overexposed, static, blurry details, subtitles, style, "
+    "artwork, painting, picture, still image, overall gray, worst quality, "
+    "low quality, JPEG compression artifacts, ugly, deformed, extra fingers, "
+    "poorly drawn hands, poorly drawn face, distorted, disfigured, malformed "
+    "limbs, fused fingers, unmoving frame, cluttered background, three legs,"
 )
+
+# Synthetic node ID for the face-only LoadImage we inject into the API prompt.
+# Must be higher than any real node ID in the workflow (last_node_id = 214).
+FACE_NODE_ID = "10001"
 
 # ─────────────────────────────────────────────────────────────
 #  /object_info cache  (implicit widget slot discovery)
@@ -78,27 +76,6 @@ def implicit_widget_names(class_type: str, explicit_names: set) -> list:
 # ─────────────────────────────────────────────────────────────
 #  GUI → API conversion
 # ─────────────────────────────────────────────────────────────
-def bypass_nop_nodes(api: dict) -> dict:
-    """
-    wanBlockSwap (nodes 202, 203) is NOP'd by ComfyUI core in recent builds.
-    Re-wire anything connected to their outputs directly to their UNETLoader
-    inputs so native model_management handles memory cleanly.
-    """
-    for nop_id in ["202", "203"]:
-        if nop_id not in api:
-            continue
-        upstream = api[nop_id]["inputs"].get("model")
-        if upstream is None:
-            continue
-        for node in api.values():
-            for k, v in node["inputs"].items():
-                if v == [nop_id, 0]:
-                    node["inputs"][k] = upstream
-        del api[nop_id]
-        print(f"  Bypassed wanBlockSwap {nop_id} → {upstream}")
-    return api
-
-
 def gui_to_api(wf: dict) -> dict:
     """Convert a ComfyUI GUI-export JSON to the API prompt format."""
     link_map: dict[int, list] = {
@@ -139,7 +116,7 @@ def gui_to_api(wf: dict) -> dict:
                 if link_id in link_map:
                     inputs_out[name] = link_map[link_id]
                 if has_widget:
-                    consume()          # advance cursor past the backed-up value
+                    consume()
             elif has_widget:
                 inputs_out[name] = consume()
 
@@ -154,7 +131,7 @@ def gui_to_api(wf: dict) -> dict:
     return api
 
 # ─────────────────────────────────────────────────────────────
-#  Per-iteration patching
+#  Per-generation patching
 # ─────────────────────────────────────────────────────────────
 def patch_api(
     api: dict,
@@ -163,26 +140,49 @@ def patch_api(
     pos_prompt: str,
     neg_prompt: str,
     seed: int,
-    frames: int | None = None,
+    duration: int = 20,
 ) -> dict:
-    """Patch node inputs for one generation pass."""
-    if "262" in api:
-        api["262"]["inputs"]["image"] = face_name     # Face / CLIPVision source
-    if "252" in api:
-        api["252"]["inputs"]["image"] = scene_name    # Start frame
-    if "6" in api:
-        api["6"]["inputs"]["text"]    = pos_prompt
-    if "7" in api:
-        api["7"]["inputs"]["text"]    = neg_prompt
-    if "105" in api:
-        resolved = seed if seed != -1 else int(time.time() * 1000) % (2**31)
-        api["105"]["inputs"]["seed"]  = resolved
-    # Implicit slot fallback for CLIPVisionEncode
-    if "261" in api and "crop" not in api["261"]["inputs"]:
-        api["261"]["inputs"]["crop"] = "center"
-    # Override frame count (node 132 = INTConstant "Frames")
-    if frames is not None and "132" in api:
-        api["132"]["inputs"]["value"] = frames
+    """
+    Patch the API prompt for one 20-second generation.
+
+    Node map (WanVideoWrapper workflow):
+      117  — LoadImage         — scene / start frame  (feeds I2V encoder)
+      118  — CR Text           — positive prompt
+      214  — CR Text           — negative prompt
+      198  — PrimitiveInt      — duration in seconds
+      all WanVideoSampler      — seed
+      all WanVideoClipVisionEncode — image_1 → synthetic face LoadImage (FACE_NODE_ID)
+    """
+    # ── Scene image ──────────────────────────────────────────────────────────
+    if "117" in api:
+        api["117"]["inputs"]["image"] = scene_name
+
+    # ── Face image (synthetic node, only for CLIPVision) ────────────────────
+    api[FACE_NODE_ID] = {
+        "class_type": "LoadImage",
+        "inputs": {"image": face_name, "upload": "image"},
+    }
+    # Redirect every WanVideoClipVisionEncode's image_1 to the face node
+    for node in api.values():
+        if node.get("class_type") == "WanVideoClipVisionEncode":
+            node["inputs"]["image_1"] = [FACE_NODE_ID, 0]
+
+    # ── Prompts ──────────────────────────────────────────────────────────────
+    if "118" in api:
+        api["118"]["inputs"]["text"] = pos_prompt
+    if "214" in api:
+        api["214"]["inputs"]["text"] = neg_prompt
+
+    # ── Seed (all sampler passes get the same seed for coherence) ────────────
+    resolved = seed if seed != -1 else int(time.time() * 1000) % (2**31)
+    for node in api.values():
+        if node.get("class_type") == "WanVideoSampler":
+            node["inputs"]["seed"] = resolved
+
+    # ── Duration ─────────────────────────────────────────────────────────────
+    if "198" in api:
+        api["198"]["inputs"]["value"] = duration
+
     return api
 
 # ─────────────────────────────────────────────────────────────
@@ -205,7 +205,7 @@ def upload_image(path: str, label: str) -> str:
     )
     with urllib.request.urlopen(req) as r:
         res = json.loads(r.read())
-    print(f"    Uploaded {label}: {res['name']}")
+    print(f"  Uploaded {label}: {res['name']}")
     return res["name"]
 
 
@@ -219,14 +219,14 @@ def queue_prompt(api_prompt: dict) -> tuple[str, str]:
     with urllib.request.urlopen(req) as r:
         res = json.loads(r.read())
     pid = res["prompt_id"]
-    print(f"    Queued: {pid}")
+    print(f"  Queued: {pid}")
     return pid, client_id
 
 
 def wait_for_completion(prompt_id: str, client_id: str):
     ws = WebSocket()
     ws.connect(f"ws://{COMFY_HOST}:{COMFY_PORT}/ws?clientId={client_id}")
-    print("    Generating ", end="", flush=True)
+    print("  Generating ", end="", flush=True)
     try:
         while True:
             msg = ws.recv()
@@ -234,11 +234,11 @@ def wait_for_completion(prompt_id: str, client_id: str):
                 d = json.loads(msg)
                 if d.get("type") == "progress":
                     v, m = d["data"]["value"], d["data"]["max"]
-                    print(f"\r    Progress: {v}/{m} steps     ", end="", flush=True)
+                    print(f"\r  Progress: {v}/{m} steps     ", end="", flush=True)
                 elif d.get("type") == "executing":
                     if (d["data"].get("prompt_id") == prompt_id
                             and d["data"].get("node") is None):
-                        print("\n    Done!")
+                        print("\n  Done!")
                         break
                 elif d.get("type") == "execution_error":
                     if d["data"].get("prompt_id") == prompt_id:
@@ -267,292 +267,84 @@ def download(file_info: dict, out_dir: str) -> str:
     params = urllib.parse.urlencode({"filename": fn, "subfolder": sub, "type": "output"})
     dest   = os.path.join(out_dir, fn)
     urllib.request.urlretrieve(f"{COMFY_URL}/view?{params}", dest)
-    print(f"    Saved: {dest}")
+    print(f"  Saved: {dest}")
     return dest
-
-
-def free_vram(target_free_gb: float = 12.0, max_wait: int = 90) -> None:
-    """
-    Unload all ComfyUI models and wait until VRAM is genuinely free.
-
-    Strategy:
-      1. POST /free  (unload_models + free_memory)
-      3s pause
-      2. POST /free again  (catches anything deferred by GC on the server)
-      3. Poll GET /system_stats every 3 s until vram_free >= target_free_gb
-         or max_wait seconds elapse.
-
-    target_free_gb=12 means we wait until >=12 GB is free on the 24 GB card,
-    which confirms both 14B fp8 models have been evicted from VRAM.
-    """
-    def _call_free() -> bool:
-        payload = json.dumps({"unload_models": True, "free_memory": True}).encode()
-        req = urllib.request.Request(
-            f"{COMFY_URL}/free",
-            data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(req):
-                return True
-        except Exception as e:
-            print(f"    /free error: {e}")
-            return False
-
-    def _vram_free_gb() -> float | None:
-        try:
-            with urllib.request.urlopen(f"{COMFY_URL}/system_stats") as r:
-                stats = json.loads(r.read())
-            devices = stats.get("devices", [])
-            if not devices:
-                return None
-            raw = devices[0].get("vram_free", 0)
-            # ComfyUI reports in bytes (torch.cuda.mem_get_info)
-            return raw / (1024 ** 3)
-        except Exception:
-            return None
-
-    print("    [free] Unloading models (pass 1)... ", end="", flush=True)
-    _call_free()
-    print("done")
-
-    time.sleep(3)
-
-    print("    [free] Unloading models (pass 2)... ", end="", flush=True)
-    _call_free()
-    print("done")
-
-    # Poll until VRAM actually drops
-    deadline = time.time() + max_wait
-    while time.time() < deadline:
-        time.sleep(3)
-        free = _vram_free_gb()
-        if free is None:
-            print("    [free] system_stats unavailable — waiting...")
-            continue
-        print(f"    [free] VRAM free: {free:.1f} GB (target ≥ {target_free_gb:.0f} GB)     ",
-              end="\r", flush=True)
-        if free >= target_free_gb:
-            print(f"\n    VRAM freed ✓ ({free:.1f} GB free)")
-            return
-
-    free = _vram_free_gb() or 0.0
-    print(f"\n    VRAM: {free:.1f} GB free after {max_wait}s — proceeding anyway")
-
-
-# ─────────────────────────────────────────────────────────────
-#  ffmpeg helpers  (server-side, no extra Python deps)
-# ─────────────────────────────────────────────────────────────
-def extract_last_frame(video_path: str, out_path: str) -> str:
-    """
-    Extract the very last frame of a video as a JPEG.
-    Uses ffmpeg's -sseof -0.5 (seek 0.5 s from end) + -frames:v 1.
-    Falls back to -update 1 without -sseof for very short clips.
-    """
-    for seek_args in (["-sseof", "-0.5"], []):
-        result = subprocess.run(
-            ["ffmpeg", "-y"] + seek_args +
-            ["-i", video_path, "-update", "1", "-frames:v", "1", "-q:v", "2", out_path],
-            capture_output=True,
-        )
-        if result.returncode == 0 and os.path.exists(out_path):
-            return out_path
-    raise RuntimeError(
-        f"ffmpeg failed to extract last frame from {video_path}:\n"
-        + result.stderr.decode()
-    )
-
-
-def concat_videos(paths: list[str], out_path: str) -> str:
-    """
-    Stream-copy concatenate MP4 files using ffmpeg concat demuxer.
-    No re-encode — instant and lossless.
-    """
-    list_file = out_path + ".concat.txt"
-    with open(list_file, "w") as f:
-        for p in paths:
-            f.write(f"file '{os.path.abspath(p)}'\n")
-    result = subprocess.run(
-        ["ffmpeg", "-y", "-f", "concat", "-safe", "0",
-         "-i", list_file, "-c", "copy", out_path],
-        capture_output=True,
-    )
-    os.unlink(list_file)
-    if result.returncode != 0:
-        raise RuntimeError("ffmpeg concat failed:\n" + result.stderr.decode())
-    return out_path
-
-
-def categorize_outputs(files: list) -> dict[str, str | None]:
-    """
-    Sort downloaded files into quality tiers by filename prefix set in the workflow:
-      - 'Upscaled'  → 4× ESRGAN + RIFE interpolated
-      - 'RIFE'      → RIFE interpolated (30 fps)
-      - 'raw'       → direct VAEDecode output (21 fps)
-    Returns the local path for each tier, or None if not present.
-    """
-    result: dict[str, str | None] = {"upscaled": None, "rife": None, "raw": None}
-    for path in files:
-        name = os.path.basename(path)
-        if "Upscaled" in name:
-            result["upscaled"] = path
-        elif "RIFE" in name:
-            result["rife"] = path
-        else:
-            result["raw"] = path
-    return result
 
 # ─────────────────────────────────────────────────────────────
 #  Main
 # ─────────────────────────────────────────────────────────────
 def main():
     p = argparse.ArgumentParser(
-        description="Wan2.2 Remix — iterative video generator"
+        description="Wan2.2 Remix NSFW — 20-second native generation (WanVideoWrapper)"
     )
     p.add_argument("--face",        required=True,
-                   help="Face image — kept constant for CLIPVision identity across all clips")
+                   help="Face image — used for CLIPVision identity guidance")
     p.add_argument("--scene",       default=None,
-                   help="Start-frame image for clip 1 (defaults to face image)")
+                   help="Start-frame image for the video (defaults to face)")
     p.add_argument("--prompt",      default=DEFAULT_PROMPT)
     p.add_argument("--negative",    default=DEFAULT_NEGATIVE)
     p.add_argument("--seed",        type=int, default=-1,
-                   help="Seed (-1 = random per clip, giving natural variation)")
+                   help="Seed (-1 = random)")
+    p.add_argument("--duration",    type=int, default=20,
+                   help="Video length in seconds (default: 20)")
     p.add_argument("--workflow",    default=str(SCRIPT_DIR / "nsfw.json"))
     p.add_argument("--output-dir",  default="./outputs")
-    p.add_argument("--iterations",  type=int, default=1,
-                   help="Number of sequential clips to generate and concatenate. "
-                        "Each clip's last frame becomes the next clip's start frame.")
-    p.add_argument("--frames",      type=int, default=None,
-                   help="Override frames-per-clip from the JSON. "
-                        "Must satisfy (F-1) %% 4 == 0: e.g. 9,13,17,21,25,29,33,49 …")
     p.add_argument("--dump-api",    action="store_true",
                    help="Write api_dump.json and exit (debug)")
     args = p.parse_args()
 
-    # Validate frames constraint
-    if args.frames is not None and (args.frames - 1) % 4 != 0:
-        p.error(f"--frames {args.frames} is invalid. Must satisfy (F-1) %% 4 == 0 "
-                f"(e.g. 9, 13, 17, 21, 25, 29, 33, 49).")
-
+    scene_path = args.scene or args.face
     os.makedirs(args.output_dir, exist_ok=True)
 
-    frames_display = args.frames if args.frames else "(from workflow JSON)"
-    duration_each  = (args.frames or 25) / 21          # raw seconds at 21 fps
-    duration_rife  = duration_each * (30 / 21)         # after RIFE → 30 fps
-    total_duration = duration_rife * args.iterations
-
     print(f"\n{'='*55}")
-    print(f"  Wan2.2 Remix — Iterative Generation")
+    print(f"  Wan2.2 Remix NSFW — {args.duration}s native generation")
     print(f"{'='*55}")
-    print(f"  Iterations  : {args.iterations}")
-    print(f"  Frames/clip : {frames_display}")
-    print(f"  Per clip    : ~{duration_rife:.1f}s @ 30 fps (after RIFE)")
-    print(f"  Total target: ~{total_duration:.1f}s")
-    print(f"{'='*55}")
+    print(f"  Face  : {args.face}")
+    print(f"  Scene : {scene_path}")
+    print(f"  Seed  : {'random' if args.seed == -1 else args.seed}")
 
-    # ── Convert workflow once; deepcopy per iteration ──────────────────────────
+    # ── Convert workflow ───────────────────────────────────────────────────
     print("\n[init] Converting workflow…")
     with open(args.workflow) as f:
         gui_wf = json.load(f)
-    base_api = gui_to_api(gui_wf)
-    base_api = bypass_nop_nodes(base_api)
+    api = gui_to_api(gui_wf)
 
     if args.dump_api:
         with open("api_dump.json", "w") as f:
-            json.dump(base_api, f, indent=2, ensure_ascii=False)
+            json.dump(api, f, indent=2, ensure_ascii=False)
         print("  Written api_dump.json")
         return
 
-    # ── Iterative generation loop ──────────────────────────────────────────────
-    current_scene: str = args.scene or args.face
-    best_clips:    list[str] = []
+    # ── Upload ─────────────────────────────────────────────────────────────
+    print("\n[1] Uploading images…")
+    face_name  = upload_image(args.face,  "face")
+    scene_name = upload_image(scene_path, "scene")
 
-    for i in range(args.iterations):
-        clip_num = i + 1
-        print(f"\n{'─'*55}")
-        print(f"  Clip {clip_num}/{args.iterations}")
-        print(f"{'─'*55}")
+    # ── Patch ──────────────────────────────────────────────────────────────
+    print("\n[2] Patching workflow…")
+    api = patch_api(
+        api, face_name, scene_name,
+        args.prompt, args.negative,
+        args.seed, duration=args.duration,
+    )
 
-        clip_dir = os.path.join(args.output_dir, f"clip_{clip_num:03d}")
-        os.makedirs(clip_dir, exist_ok=True)
+    # ── Queue ──────────────────────────────────────────────────────────────
+    print("\n[3] Queuing…")
+    pid, cid = queue_prompt(api)
 
-        # 1. Upload ──────────────────────────────────────────────────────────
-        print("\n  [1] Uploading images…")
-        face_name  = upload_image(args.face,      "face")
-        scene_name = upload_image(current_scene,  "scene")
+    # ── Generate (multi-pass, handled internally by WanVideoWrapper) ────────
+    print("\n[4] Generating (WanVideoWrapper multi-pass)…")
+    wait_for_completion(pid, cid)
 
-        # 2. Patch ───────────────────────────────────────────────────────────
-        api = patch_api(
-            copy.deepcopy(base_api),
-            face_name, scene_name,
-            args.prompt, args.negative,
-            args.seed,            # -1 = random each clip for natural motion variation
-            frames=args.frames,
-        )
+    # ── Download ───────────────────────────────────────────────────────────
+    files = get_outputs(pid)
+    if not files:
+        print("  No outputs — check ComfyUI terminal.")
+        sys.exit(1)
 
-        # 3. Queue ───────────────────────────────────────────────────────────
-        print("\n  [2] Queueing…")
-        pid, cid = queue_prompt(api)
-
-        # 4. Generate ────────────────────────────────────────────────────────
-        print("\n  [3] Generating…")
-        wait_for_completion(pid, cid)
-
-        # 5. Download ────────────────────────────────────────────────────────
-        files = get_outputs(pid)
-        if not files:
-            print("  ✗ No outputs — check ComfyUI terminal. Stopping.")
-            sys.exit(1)
-
-        print(f"\n  [4] Downloading {len(files)} file(s)…")
-        local_paths: list[str] = [download(fi, clip_dir) for fi in files]
-        tiers = categorize_outputs(local_paths)
-
-        # Best quality for final concat: upscaled > RIFE > raw
-        best = tiers["upscaled"] or tiers["rife"] or tiers["raw"]
-        if best:
-            best_clips.append(best)
-            tier_label = ("upscaled" if tiers["upscaled"]
-                          else "RIFE 30fps" if tiers["rife"]
-                          else "raw 21fps")
-            print(f"    Best clip ({tier_label}): {best}")
-
-        # 6. Free VRAM before next clip ──────────────────────────────────────
-        if i < args.iterations - 1:
-            print("\n  [5] Freeing VRAM…")
-            free_vram()
-
-        # 7. Extract last frame as start scene for the next clip ─────────────
-        if i < args.iterations - 1:
-            raw = tiers["raw"]
-            if not raw:
-                print("  ✗ No raw video found — cannot chain to next clip. Stopping.")
-                break
-            next_scene = os.path.join(args.output_dir, f"scene_clip_{clip_num+1:03d}.jpg")
-            print(f"\n  [5] Extracting last frame → {next_scene}")
-            try:
-                extract_last_frame(raw, next_scene)
-                current_scene = next_scene
-            except RuntimeError as e:
-                print(f"  ✗ {e}\n  Stopping iteration.")
-                break
-
-    # ── Concatenate all clips ──────────────────────────────────────────────────
-    if len(best_clips) > 1:
-        final = os.path.join(args.output_dir, "final.mp4")
-        print(f"\n{'='*55}")
-        print(f"  Concatenating {len(best_clips)} clips → final.mp4")
-        print(f"{'='*55}")
-        try:
-            concat_videos(best_clips, final)
-            actual = len(best_clips) * duration_rife
-            print(f"  ✓ {final}")
-            print(f"  Duration: ~{actual:.1f}s @ 30 fps")
-        except RuntimeError as e:
-            print(f"  ✗ Concat failed: {e}")
-    elif best_clips:
-        print(f"\n  Output: {best_clips[0]}")
+    print(f"\n[5] Downloading {len(files)} file(s)…")
+    for fi in files:
+        download(fi, args.output_dir)
 
     print("\nDone ✓")
 

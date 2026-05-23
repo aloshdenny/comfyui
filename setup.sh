@@ -41,6 +41,21 @@ pip install -r rgthree-comfy/requirements.txt
 git clone https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git
 pip install -r ComfyUI-VideoHelperSuite/requirements.txt
 
+# ── WanVideoWrapper (Kijai) — 20-second native generation ──────
+git clone https://github.com/kijai/ComfyUI-WanVideoWrapper.git
+pip install -r ComfyUI-WanVideoWrapper/requirements.txt
+
+# easy cleanGpuUsed node (between-stage VRAM flush)
+git clone https://github.com/yolain/ComfyUI-Easy-Use.git
+pip install -r ComfyUI-Easy-Use/requirements.txt
+
+# CR Text node (prompt text boxes)
+git clone https://github.com/Suzie1/ComfyUI_Comfyroll_CustomNodes.git
+
+# DF_Int_to_Float + PrimitiveInt
+git clone https://github.com/DavidFTF/ComfyUI-DF-Nodes.git
+
+
 # ── RIFE: download correct weights + fix imports + add inference_batch ─
 # Download v4.26 weights from HuggingFace (these match IFNet_HDv3 architecture)
 python3 -c "
@@ -122,6 +137,14 @@ wget -c "https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/mai
 wget -c "https://huggingface.co/FacehugmanIII/4x_foolhardy_Remacri/resolve/main/4x_foolhardy_Remacri.pth" \
   -O ~/ComfyUI/models/upscale_models/4x_foolhardy_Remacri.pth
 
-# ── Launch ─────────────────────────────────────────────────────
-cd ~/ComfyUI
-python main.py --listen 0.0.0.0 --port 8188 --gpu-only
+# ── WanVideoWrapper-specific files ─────────────────────────────
+# LightX2V step-distillation LoRA (6-step generation at 20 seconds)
+mkdir -p ~/ComfyUI/models/loras
+wget -c "https://huggingface.co/Kijai/WanVideo-models/resolve/main/lightx2v_I2V_14B_480p_cfg_step_distill_rank256_bf16.safetensors" \
+  -O ~/ComfyUI/models/loras/lightx2v_I2V_14B_480p_cfg_step_distill_rank256_bf16.safetensors
+
+# T5 encoder symlink: WanVideoWrapper looks in models/text_encoders/
+# We re-use the NSFW encoder already downloaded to models/clip/
+mkdir -p ~/ComfyUI/models/text_encoders
+ln -sf ~/ComfyUI/models/clip/nsfw_wan_umt5-xxl_fp8_scaled.safetensors \
+        ~/ComfyUI/models/text_encoders/nsfw_wan_umt5-xxl_fp8_scaled.safetensors
