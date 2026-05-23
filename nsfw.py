@@ -270,6 +270,77 @@ def download(file_info: dict, out_dir: str) -> str:
     print(f"    Saved: {dest}")
     return dest
 
+
+def free_vram(target_free_gb: float = 12.0, max_wait: int = 90) -> None:
+    """
+    Unload all ComfyUI models and wait until VRAM is genuinely free.
+
+    Strategy:
+      1. POST /free  (unload_models + free_memory)
+      3s pause
+      2. POST /free again  (catches anything deferred by GC on the server)
+      3. Poll GET /system_stats every 3 s until vram_free >= target_free_gb
+         or max_wait seconds elapse.
+
+    target_free_gb=12 means we wait until >=12 GB is free on the 24 GB card,
+    which confirms both 14B fp8 models have been evicted from VRAM.
+    """
+    def _call_free() -> bool:
+        payload = json.dumps({"unload_models": True, "free_memory": True}).encode()
+        req = urllib.request.Request(
+            f"{COMFY_URL}/free",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req):
+                return True
+        except Exception as e:
+            print(f"    /free error: {e}")
+            return False
+
+    def _vram_free_gb() -> float | None:
+        try:
+            with urllib.request.urlopen(f"{COMFY_URL}/system_stats") as r:
+                stats = json.loads(r.read())
+            devices = stats.get("devices", [])
+            if not devices:
+                return None
+            raw = devices[0].get("vram_free", 0)
+            # ComfyUI reports in bytes (torch.cuda.mem_get_info)
+            return raw / (1024 ** 3)
+        except Exception:
+            return None
+
+    print("    [free] Unloading models (pass 1)... ", end="", flush=True)
+    _call_free()
+    print("done")
+
+    time.sleep(3)
+
+    print("    [free] Unloading models (pass 2)... ", end="", flush=True)
+    _call_free()
+    print("done")
+
+    # Poll until VRAM actually drops
+    deadline = time.time() + max_wait
+    while time.time() < deadline:
+        time.sleep(3)
+        free = _vram_free_gb()
+        if free is None:
+            print("    [free] system_stats unavailable — waiting...")
+            continue
+        print(f"    [free] VRAM free: {free:.1f} GB (target ≥ {target_free_gb:.0f} GB)     ",
+              end="\r", flush=True)
+        if free >= target_free_gb:
+            print(f"\n    VRAM freed ✓ ({free:.1f} GB free)")
+            return
+
+    free = _vram_free_gb() or 0.0
+    print(f"\n    VRAM: {free:.1f} GB free after {max_wait}s — proceeding anyway")
+
+
 # ─────────────────────────────────────────────────────────────
 #  ffmpeg helpers  (server-side, no extra Python deps)
 # ─────────────────────────────────────────────────────────────
@@ -447,7 +518,12 @@ def main():
                           else "raw 21fps")
             print(f"    Best clip ({tier_label}): {best}")
 
-        # 6. Extract last frame for the next clip ────────────────────────────
+        # 6. Free VRAM before next clip ──────────────────────────────────────
+        if i < args.iterations - 1:
+            print("\n  [5] Freeing VRAM…")
+            free_vram()
+
+        # 7. Extract last frame as start scene for the next clip ─────────────
         if i < args.iterations - 1:
             raw = tiers["raw"]
             if not raw:

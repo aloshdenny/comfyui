@@ -17,7 +17,7 @@ bash setup.sh
 # In one terminal — keep this running
 conda activate comfyui
 cd ~/ComfyUI
-python main.py --listen 0.0.0.0 --port 8188 --gpu-only
+python main.py --lowvram
 ```
 
 ### Run the Script
@@ -36,4 +36,13 @@ python nsfw.py \
   --seed 42 \
   --workflow ~/nsfw.json \
   --output-dir ./my_videos
+```
+
+### Copy files to local
+
+```
+ssh research@100.86.165.70 'wsl cp ~/alosh/comfyui/outputs/*.mp4 /mnt/c/Users/research/Desktop/' && \
+scp "research@100.86.165.70:C:/Users/research/Desktop/*.mp4" ~/Downloads/ && \
+ssh research@100.86.165.70 'del C:\\Users\\research\\Desktop\\*.mp4' 2>/dev/null || \
+ssh research@100.86.165.70 'powershell -Command "Remove-Item C:/Users/research/Desktop/*.mp4"'
 ```

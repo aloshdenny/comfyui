@@ -566,7 +566,7 @@
       "size": [270, 130],
       "flags": {},
       "order": 28,
-      "mode": 0,
+      "mode": 2,
       "inputs": [
         {"label": "images", "name": "images", "type": "IMAGE", "link": 414},
         {"label": "model_name", "name": "model_name", "type": "COMBO", "widget": {"name": "model_name"}},
