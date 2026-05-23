@@ -38,6 +38,23 @@ python nsfw.py \
   --output-dir ./my_videos
 ```
 
+### Advanced script run commands
+
+```
+# Quick test (single clip, current 25-frame config)
+python nsfw.py --face her.jpg
+```
+
+```
+# Long video: 10 clips × ~1.2s each = ~12 seconds @ 30fps
+python nsfw.py --face her.jpg --iterations 10
+```
+
+```
+# Max frames (49) for longest possible single clips
+python nsfw.py --face her.jpg --iterations 10 --frames 49
+```
+
 ### Copy files to local
 
 ```
