@@ -429,7 +429,7 @@
       ],
       "title": "Frames (reduced for 24GB)",
       "properties": {"Node name for S&R": "INTConstant", "cnr_id": "comfyui-kjnodes"},
-      "widgets_values": [9],
+      "widgets_values": [25],
       "color": "#1b4669",
       "bgcolor": "#29699c"
     },
