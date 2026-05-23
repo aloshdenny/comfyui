@@ -21,21 +21,10 @@ COMFY_URL   = f"http://{COMFY_HOST}:{COMFY_PORT}"
 SCRIPT_DIR  = Path(__file__).parent.resolve()
 
 DEFAULT_PROMPT = (
-    "A young woman with long dark hair stands on a rooftop during daytime, "
-    "looking slightly shy but smiling softly. She gently unbuttons the top of "
-    "her light-colored shirt, revealing her Breasts. Her hands move slowly and "
-    "hesitantly, as if she's a little nervous while adjusting her outfit. Her "
-    "expression is sweet, reserved, and warm, with natural daylight creating a "
-    "soft, ultra-realistic mood. Industrial railings and rooftops sit in the "
-    "background, with the camera focused gently on her upper body and subtle, "
-    "emotional details."
+"A young woman with long dark hair stands in a softly lit bedroom during daytime, looking slightly shy but smiling gently. She slowly unbuttons the top of her light-colored shirt while adjusting her outfit, her movements hesitant and natural, as if a little nervous. She reveals her pompous breasts and nipples, squeezes them and ejaculates milk. Her expression is warm, sweet, and reserved, with soft daylight streaming through the window to create an intimate, ultra-realistic atmosphere. A neatly made bed, curtains, and subtle bedroom decor fill the background, while the camera focuses delicately on her upper body and subtle emotional details."
 )
 DEFAULT_NEGATIVE = (
-    "Vivid tones, overexposed, static, blurry details, subtitles, style, "
-    "artwork, painting, picture, still image, overall gray, worst quality, "
-    "low quality, JPEG compression artifacts, ugly, deformed, extra fingers, "
-    "poorly drawn hands, poorly drawn face, distorted, disfigured, malformed "
-    "limbs, fused fingers, unmoving frame, cluttered background, three legs,"
+"Vivid tones, overexposed lighting, static blurry details, subtitles, artwork or painting style, still-image appearance, gray overall tone, worst quality, low quality, JPEG compression artifacts, ugly or deformed features, poorly drawn hands and face, distorted or disfigured anatomy, malformed limbs, fused or extra fingers, cluttered background, unnatural body proportions, three legs, and an unmoving frame."
 )
 
 # Synthetic node ID for the face-only LoadImage we inject into the API prompt.
