@@ -52,8 +52,8 @@ pip install -r ComfyUI-Easy-Use/requirements.txt
 # CR Text node (prompt text boxes)
 git clone https://github.com/Suzie1/ComfyUI_Comfyroll_CustomNodes.git
 
-# DF_Int_to_Float + PrimitiveInt
-git clone https://github.com/DavidFTF/ComfyUI-DF-Nodes.git
+# DF_Int_to_Float (Derfuu Modded Nodes)
+git clone https://github.com/Derfuu/Derfuu_ComfyUI_ModdedNodes.git
 
 
 # ── RIFE: download correct weights + fix imports + add inference_batch ─
@@ -138,10 +138,23 @@ wget -c "https://huggingface.co/FacehugmanIII/4x_foolhardy_Remacri/resolve/main/
   -O ~/ComfyUI/models/upscale_models/4x_foolhardy_Remacri.pth
 
 # ── WanVideoWrapper-specific files ─────────────────────────────
-# LightX2V step-distillation LoRA (6-step generation at 20 seconds)
+# LightX2V step-distillation LoRA
+# Repo: Kijai/WanVideo_comfy  subfolder: Lightx2v/
+# (hf_hub_download required — file uses Xet storage, wget fails)
 mkdir -p ~/ComfyUI/models/loras
-wget -c "https://huggingface.co/Kijai/WanVideo-models/resolve/main/lightx2v_I2V_14B_480p_cfg_step_distill_rank256_bf16.safetensors" \
-  -O ~/ComfyUI/models/loras/lightx2v_I2V_14B_480p_cfg_step_distill_rank256_bf16.safetensors
+python3 -c "
+import os
+from huggingface_hub import hf_hub_download
+path = hf_hub_download(
+    repo_id='Kijai/WanVideo_comfy',
+    filename='Lightx2v/lightx2v_I2V_14B_480p_cfg_step_distill_rank256_bf16.safetensors',
+    local_dir=os.path.expanduser('~/ComfyUI/models/loras'),
+    local_dir_use_symlinks=False,
+)
+print('LoRA downloaded to:', path)
+"
+# Flatten out of Lightx2v/ subdir if needed
+mv ~/ComfyUI/models/loras/Lightx2v/*.safetensors ~/ComfyUI/models/loras/ 2>/dev/null || true
 
 # T5 encoder symlink: WanVideoWrapper looks in models/text_encoders/
 # We re-use the NSFW encoder already downloaded to models/clip/
