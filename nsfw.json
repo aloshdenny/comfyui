@@ -727,14 +727,14 @@
         "widget_ue_connectable": {}
       },
       "widgets_values": [
-        6,
+        20,
         1,
         8,
         607962614138,
         "randomize",
         true,
         "unipc",
-        6,
+        0,
         1,
         false,
         "comfy",
@@ -1995,14 +1995,14 @@
         "widget_ue_connectable": {}
       },
       "widgets_values": [
-        6,
+        20,
         1,
         8,
         488464974346901,
         "randomize",
         true,
         "unipc",
-        6,
+        0,
         1,
         false,
         "comfy",
@@ -2080,7 +2080,7 @@
         "widget_ue_connectable": {}
       },
       "widgets_values": [
-        11,
+        7.0,
         2.5,
         0.25
       ]
@@ -2507,14 +2507,14 @@
         "widget_ue_connectable": {}
       },
       "widgets_values": [
-        6,
+        20,
         1,
         8,
         503720222513821,
         "randomize",
         true,
         "unipc",
-        6,
+        0,
         1,
         false,
         "comfy",
@@ -2914,7 +2914,7 @@
         "widget_ue_connectable": {}
       },
       "widgets_values": [
-        21,
+        16,
         "fixed"
       ]
     },
@@ -3727,7 +3727,7 @@
         "widget_ue_connectable": {}
       },
       "widgets_values": [
-        20,
+        10,
         "fixed"
       ]
     },
@@ -4350,14 +4350,14 @@
         "widget_ue_connectable": {}
       },
       "widgets_values": [
-        6,
+        20,
         1,
         8,
         52543165256476,
         "randomize",
         true,
         "unipc",
-        6,
+        0,
         1,
         false,
         "comfy",
@@ -4435,7 +4435,7 @@
         "widget_ue_connectable": {}
       },
       "widgets_values": [
-        11,
+        7.0,
         2.5,
         0.25
       ]
@@ -4724,8 +4724,8 @@
         "widget_ue_connectable": {}
       },
       "widgets_values": [
-        "lightx2v_I2V_14B_480p_cfg_step_distill_rank256_bf16.safetensors",
-        1,
+        "none",
+        0,
         "none",
         1,
         "none",

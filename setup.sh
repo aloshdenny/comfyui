@@ -43,7 +43,27 @@ pip install -r ComfyUI-VideoHelperSuite/requirements.txt
 
 # ── WanVideoWrapper (Kijai) — 20-second native generation ──────
 git clone https://github.com/kijai/ComfyUI-WanVideoWrapper.git
+# Pull latest: fixes 'Negative embeddings must be provided for CFG > 1.0' check
+# that blocks cfg=1 usage without LoRA in older versions.
+( cd ComfyUI-WanVideoWrapper && git pull )
 pip install -r ComfyUI-WanVideoWrapper/requirements.txt
+
+# ── RIFE frame interpolation (GPU, recommended over ffmpeg minterpolate) ───
+git clone https://github.com/Fannovel16/ComfyUI-Frame-Interpolation.git
+( cd ComfyUI-Frame-Interpolation && git pull )
+pip install -r ComfyUI-Frame-Interpolation/requirements.txt
+# Download RIFE v4.6 model weights
+python3 -c "
+import os
+from huggingface_hub import hf_hub_download
+hf_hub_download(
+    repo_id='Fannovel16/compact_pretrined_models',
+    filename='rife/flownet_v4.6.pkl',
+    local_dir=os.path.expanduser('~/ComfyUI/custom_nodes/ComfyUI-Frame-Interpolation/ckpts/rife'),
+    local_dir_use_symlinks=False,
+)
+print('RIFE v4.6 weights downloaded.')
+"
 
 # easy cleanGpuUsed node (between-stage VRAM flush)
 git clone https://github.com/yolain/ComfyUI-Easy-Use.git
