@@ -1,17 +1,24 @@
 #!/usr/bin/env python3
 """
-nsfw.py  —  Wan2.2 Remix NSFW 20-second video runner
-             (ComfyUI-WanVideoWrapper backend)
+nsfw.py  —  Wan2.2 Remix NSFW  chained-act video generator
+             (ComfyUI-WanVideoWrapper, single-pass per act)
+
+Strategy:
+  • Each act = one ComfyUI run = Pipeline A only = 81 frames @ 16fps = 5s
+  • 4 acts × 5s = 20s total, no internal dual-pipeline complexity
+  • Acts are chained: last frame of act N → start frame of act N+1
+  • ffmpeg concatenates all clips → optional RIFE minterpolate 16→32fps
+
+  The workflow JSON is loaded once, converted to API format via /object_info
+  (so field names are always correct), then Pipeline B nodes are stripped
+  before queuing each act.
 
 Usage:
     python nsfw.py --face her.jpg
-    python nsfw.py --face her.jpg --scene scene.jpg --prompt "..." --duration 8 --iterations 4
-
-Duration is the 'a' value in the workflow formula: frames = a*b/2+1 where b=16 (fixed in JSON).
-  a=10 → 10*16/2+1 = 81 frames = 5.06s @ 16fps — the EXACT Wan2.2 training maximum.
-  Beyond 81 frames the model reverses. Use --iterations 4 for ~20s of continuous video.
+    python nsfw.py --face her.jpg --scene scene.jpg --acts 4
+    python nsfw.py --face her.jpg --no-rife --seed 42
 """
-import argparse, copy, json, os, sys, time, uuid
+import argparse, copy, json, os, subprocess, sys, time, uuid
 import urllib.request, urllib.parse
 from pathlib import Path
 from websocket import WebSocket
@@ -20,23 +27,89 @@ from websocket import WebSocket
 #  Config
 # ─────────────────────────────────────────────────────────────
 COMFY_HOST = "127.0.0.1"
-COMFY_PORT  = 8188
-COMFY_URL   = f"http://{COMFY_HOST}:{COMFY_PORT}"
-SCRIPT_DIR  = Path(__file__).parent.resolve()
+COMFY_PORT= 8188
+COMFY_URL = f"http://{COMFY_HOST}:{COMFY_PORT}"
+SCRIPT_DIR= Path(__file__).parent.resolve()
 
-DEFAULT_PROMPT = (
-"A young woman with long dark hair stands in a softly lit bedroom during daytime, looking slightly shy but smiling gently. She slowly unbuttons the top of her light-colored shirt while adjusting her outfit, her movements hesitant and natural, as if a little nervous. She reveals her pompous breasts and nipples, squeezes them and as she does so, milk squirts out of those nipples and drips down her belly, all the way to her bellybutton.  She then slowly removes her underwear, revealing a bushy hairy vagina, dripping wet. She fingers herself, inserts two fingers deep inside and stimulates her clitoris with her thumb. She turns around, revealing her fair-skinned buttocks, bending over to reveal her anus. She then begins penetrating herself with a dildo. Then she pulls out the dildo and comes all over her face and tits. At the end she writes Daddy's girl on her tits with her milk. Her expression is warm, sweet, and reserved, with soft daylight streaming through the window to create an intimate, ultra-realistic atmosphere."
-)
-DEFAULT_NEGATIVE = (
-"Vivid tones, overexposed lighting, static blurry details, subtitles, artwork or painting style, still-image appearance, gray overall tone, worst quality, low quality, JPEG compression artifacts, ugly or deformed features, poorly drawn hands and face, distorted or disfigured anatomy, malformed limbs, fused or extra fingers, cluttered background, unnatural body proportions, three legs, and an unmoving frame."
-)
+# Wan2.2 I2V training limits — beyond these the model reverses
+WAN_FRAMES = 81   # max frames per pass
+WAN_FPS  = 16   # native fps
 
-# Synthetic node ID for the face-only LoadImage we inject into the API prompt.
-# Must be higher than any real node ID in the workflow (last_node_id = 214).
+# Pipeline B node IDs (str) — stripped so each run is a single 81-frame pass
+PIPELINE_B_NODES = {
+    "180", "181",         # model loaders for B
+    "164", "165",         # SetLoRAs for B
+    "166", "167",         # SetBlockSwap for B
+    "173", "174",         # text encoders for B
+    "176",                # NAG for B
+    "205",                # CLIPVisionEncode for B
+    "183",                # I2VEncode for B
+    "178", "177",         # samplers for B
+    "186",                # WanVideoDecode for B
+    "147",                # ImageFromBatch+ (extracts frame for B start)
+    "192",                # SimpleMath+ (frame index for 147)
+    "188",                # GetImageSize for B
+    "191",                # ImageBatch (combines A+B — no longer needed)
+    "171", "206",         # easy cleanGpuUsed for B model loaders
+    "161", "163",         # easy cleanGpuUsed for B samplers
+}
+
+# Synthetic node injected for face-only CLIPVision input
 FACE_NODE_ID = "10001"
 
 # ─────────────────────────────────────────────────────────────
-#  /object_info cache  (implicit widget slot discovery)
+#  Default prompts — 4 sequential acts, each describes ~5s
+# ─────────────────────────────────────────────────────────────
+DEFAULT_ACTS = [
+    # Act 1: Setting + undressing top
+    (
+        "A young woman with long dark hair stands in a softly lit bedroom "
+        "during daytime, looking slightly shy but smiling gently. She slowly "
+        "unbuttons her light-colored shirt from top to bottom, her movements "
+        "natural and hesitant. She peels the shirt fully open, revealing her "
+        "large bare breasts with erect nipples. She looks down with a warm "
+        "smile. Ultra-realistic, soft daylight through the window, "
+        "continuous smooth motion, no reversal."
+    ),
+    # Act 2: Breast play
+    (
+        "The young woman cups both bare breasts with her hands and gently "
+        "squeezes them. As she presses, milk slowly beads at her nipples "
+        "and drips down her bare belly toward her navel. She looks down at "
+        "her chest with a quiet, shy expression. Same softly lit bedroom, "
+        "daylight from window, ultra-realistic, steady camera, "
+        "continuous smooth motion."
+    ),
+    # Act 3: Lower body reveal + self-pleasure
+    (
+        "The young woman slides her underwear down past her hips and steps "
+        "out of it, revealing a natural hairy vagina glistening with "
+        "moisture. She parts her thighs, presses two fingers inside herself "
+        "and stimulates her clitoris with her thumb. Her face shows quiet "
+        "pleasure. Same bedroom, same soft daylight, ultra-realistic, "
+        "continuous smooth motion, no looping."
+    ),
+    # Act 4: Turning + climax
+    (
+        "The young woman turns around and bends forward, presenting her "
+        "fair-skinned round buttocks to the camera and revealing her anus. "
+        "She reaches back between her legs and continues pleasuring herself. "
+        "Her body trembles and she climaxes, fluids visible on her thighs. "
+        "Same bedroom, soft daylight, ultra-realistic, continuous motion "
+        "to the very end of the clip."
+    ),
+]
+
+DEFAULT_NEGATIVE = (
+    "static image, still frame, looping, reversing, boomerang, "
+    "returning to start frame, vivid oversaturated tones, overexposed, "
+    "blurry, subtitles, artwork, painting, gray tone, worst quality, "
+    "low quality, JPEG artifacts, ugly, deformed hands, deformed face, "
+    "extra fingers, three legs, unmoving frame, text overlay"
+)
+
+# ─────────────────────────────────────────────────────────────
+#  /object_info cache  (widget-slot name lookup)
 # ─────────────────────────────────────────────────────────────
 _OBJ_INFO: dict = {}
 
@@ -47,79 +120,98 @@ def object_info() -> dict:
             _OBJ_INFO = json.loads(r.read())
     return _OBJ_INFO
 
-WIDGET_TYPES        = {"INT", "FLOAT", "STRING", "BOOLEAN", "COMBO", "IMAGEUPLOAD"}
-SEED_CONTROL_TOKENS = {"randomize", "fixed", "increment", "increment (loop)"}
+WIDGET_TYPES = {"INT", "FLOAT", "STRING", "BOOLEAN", "COMBO", "IMAGEUPLOAD"}
 
-def implicit_widget_names(class_type: str, explicit_names: set) -> list:
+def implicit_widgets(class_type: str) -> list:
+    """Return ordered list of widget-slot names for class_type (from /object_info)."""
     info = object_info()
     if class_type not in info:
         return []
-    result = []
-    for group in ("required", "optional"):
-        for name, spec in info[class_type]["input"].get(group, {}).items():
-            if name in explicit_names:
-                continue
-            t = spec[0] if isinstance(spec, list) else spec
-            if isinstance(t, list):
-                t = "COMBO"
-            if t in WIDGET_TYPES:
-                result.append(name)
-    return result
+    spec = info[class_type].get("input", {})
+    names = []
+    for name, defn in {**spec.get("required", {}), **spec.get("optional", {})}.items():
+        t = defn[0]
+        if isinstance(t, list) or (isinstance(t, str) and t in WIDGET_TYPES):
+            names.append(name)
+    return names
 
 # ─────────────────────────────────────────────────────────────
 #  GUI → API conversion
 # ─────────────────────────────────────────────────────────────
-def gui_to_api(wf: dict) -> dict:
-    """Convert a ComfyUI GUI-export JSON to the API prompt format."""
-    link_map: dict[int, list] = {
-        lnk[0]: [str(lnk[1]), lnk[2]]
-        for lnk in wf.get("links", [])
-    }
-
+def gui_to_api(gui_wf: dict) -> dict:
+    """
+    Convert a ComfyUI GUI-format JSON to API-format using /object_info.
+    This guarantees correct field names regardless of WanVideoWrapper version.
+    """
+    link_tbl = {lnk[0]: (str(lnk[1]), lnk[2]) for lnk in gui_wf.get("links", [])}
     api: dict = {}
 
-    for node in wf.get("nodes", []):
+    for node in gui_wf["nodes"]:
         class_type = node.get("type", "")
-        node_id    = str(node["id"])
-
         if class_type in ("Note", "Reroute"):
             continue
 
-        raw_wv = node.get("widgets_values", [])
-        wv: list = list(raw_wv.values()) if isinstance(raw_wv, dict) else list(raw_wv)
+        nid = str(node["id"])
+        widget_names = implicit_widgets(class_type)
+        inputs: dict = {}
 
-        explicit_inputs = node.get("inputs", [])
-        inputs_out: dict = {}
-        wv_cursor = 0
+        # Linked inputs → node reference
+        for inp in node.get("inputs", []):
+            link_id = inp.get("link")
+            if link_id is not None and link_id in link_tbl:
+                inputs[inp["name"]] = list(link_tbl[link_id])
 
-        def consume():
-            nonlocal wv_cursor
-            val = wv[wv_cursor] if wv_cursor < len(wv) else None
-            wv_cursor += 1
-            while wv_cursor < len(wv) and wv[wv_cursor] in SEED_CONTROL_TOKENS:
-                wv_cursor += 1
-            return val
+        # Widget values → inline values (skip slots already linked)
+        # widgets_values can be a list (most nodes) or a dict (e.g. VHS_VideoCombine).
+        # ComfyUI GUI injects seed-control sentinels ('randomize', 'fixed', …) into
+        # widget_values for nodes with seed inputs. These are client-side only and must
+        # be stripped before positional mapping against /object_info field names.
+        SEED_CTRL = frozenset({
+            "randomize", "fixed", "increment", "decrement",
+            "control_before_generate", "control_after_generate",
+        })
+        wv = node.get("widgets_values", [])
+        if isinstance(wv, dict):
+            # Dict format: keyed directly by field name — just skip sentinel values
+            for name in widget_names:
+                if name in inputs:
+                    continue
+                if name in wv:
+                    val = wv[name]
+                    if val not in SEED_CTRL:
+                        inputs[name] = val
+        else:
+            # List format: strip seed-control sentinels first, then map positionally
+            wv_clean = [v for v in wv if v not in SEED_CTRL]
+            wi = 0
+            for name in widget_names:
+                if name in inputs:
+                    wi += 1   # linked slot still consumes a cleaned position
+                    continue
+                if wi < len(wv_clean):
+                    inputs[name] = wv_clean[wi]
+                wi += 1
 
-        for inp in explicit_inputs:
-            name       = inp["name"]
-            link_id    = inp.get("link")
-            has_widget = "widget" in inp
 
-            if link_id is not None:
-                if link_id in link_map:
-                    inputs_out[name] = link_map[link_id]
-                if has_widget:
-                    consume()
-            elif has_widget:
-                inputs_out[name] = consume()
+        api[nid] = {"class_type": class_type, "inputs": inputs}
 
-        explicit_names = {inp["name"] for inp in explicit_inputs}
-        for name in implicit_widget_names(class_type, explicit_names):
-            if wv_cursor < len(wv):
-                inputs_out[name] = wv[wv_cursor]
-                wv_cursor += 1
+    return api
 
-        api[node_id] = {"class_type": class_type, "inputs": inputs_out}
+# ─────────────────────────────────────────────────────────────
+#  Strip Pipeline B — make each run a clean single 81-frame pass
+# ─────────────────────────────────────────────────────────────
+def strip_pipeline_b(api: dict) -> dict:
+    """
+    Remove all Pipeline B nodes from the API dict so each ComfyUI run
+    generates exactly one 81-frame segment (Pipeline A only).
+    Redirect VHS node 185's images input from ImageBatch 191
+    to WanVideoDecode 96 (Pipeline A's output).
+    """
+    api = {k: v for k, v in api.items() if k not in PIPELINE_B_NODES}
+
+    # Redirect VHS output to Pipeline A decode
+    if "185" in api:
+        api["185"]["inputs"]["images"] = ["96", 0]
 
     return api
 
@@ -133,59 +225,53 @@ def patch_api(
     pos_prompt: str,
     neg_prompt: str,
     seed: int,
-    duration: int = 8,
+    duration: int = 10,
 ) -> dict:
     """
-    Patch the API prompt for one 20-second generation.
+    Patch the API prompt for one act.
 
-    Node map (WanVideoWrapper workflow):
-      117  — LoadImage         — scene / start frame  (feeds I2V encoder)
-      118  — CR Text           — positive prompt
-      214  — CR Text           — negative prompt
-      198  — PrimitiveInt      — duration in seconds
-      all WanVideoSampler      — seed
-      all WanVideoClipVisionEncode — image_1 → synthetic face LoadImage (FACE_NODE_ID)
+    Node map:
+      117  LoadImage         — scene / start frame
+      118  CR Text           — positive prompt
+      214  CR Text           — negative prompt
+      198  PrimitiveInt      — 'a' value in frame formula (a*16/2+1)
+      201  WanVideoClipVisionEncode — Pipeline A identity (→ face)
+      all WanVideoSampler    — seed
     """
-    # ── Scene image ──────────────────────────────────────────────────────────
+    # Scene start frame
     if "117" in api:
         api["117"]["inputs"]["image"] = scene_name
 
-    # ── Face image (synthetic node, for Pipeline A's CLIPVision only) ──────
+    # Inject face LoadImage node (synthetic)
     api[FACE_NODE_ID] = {
         "class_type": "LoadImage",
         "inputs": {"image": face_name, "upload": "image"},
     }
-    # Only redirect Pipeline A's CLIPVision (node 201) to the face.
-    # Pipeline B's CLIPVision (node 205) keeps using the extracted last frame
-    # from Pipeline A — this provides visual continuity instead of resetting
-    # to the original face mid-video, which was causing the perceived "loop."
-    PIPELINE_A_CLIP = "201"
-    if PIPELINE_A_CLIP in api and api[PIPELINE_A_CLIP].get("class_type") == "WanVideoClipVisionEncode":
-        api[PIPELINE_A_CLIP]["inputs"]["image_1"] = [FACE_NODE_ID, 0]
+    # Only redirect Pipeline A's CLIPVision (201) to the face.
+    # (Pipeline B's CLIPVision 205 is already stripped.)
+    if "201" in api:
+        api["201"]["inputs"]["image_1"] = [FACE_NODE_ID, 0]
 
-    # ── Prompts ──────────────────────────────────────────────────────────────
+    # Positive prompt (via CR Text 118)
     if "118" in api:
         api["118"]["inputs"]["text"] = pos_prompt
+
+    # Negative prompt (via CR Text 214)
     if "214" in api:
         api["214"]["inputs"]["text"] = neg_prompt
 
-    # ── Seed (each pass gets a DIFFERENT seed for content diversity) ─────────
-    # Same base seed → same set of 4 seeds → reproducible, but each segment
-    # explores a different noise region so the action actually progresses.
-    resolved = seed if seed != -1 else int(time.time() * 1000) % (2**31)
-    sampler_nodes = sorted(
-        ((nid, n) for nid, n in api.items() if n.get("class_type") == "WanVideoSampler"),
-        key=lambda x: int(x[0]) if x[0].lstrip("-").isdigit() else 0,
-    )
-    for idx, (_, node) in enumerate(sampler_nodes):
-        node["inputs"]["seed"] = (resolved + idx * 31337) % (2**31)
-
-
-    # ── Duration — clamp to 10 (=81 frames, the Wan2.2 training limit) ────────────
-    # Formula: a*16/2+1 where 16 is b (node 199). a=10 → 81 frames = 5.06s @ 16fps.
-    # Going above 81 causes the model to reverse at the end of the segment.
+    # Duration → frame count: a*16/2+1, a=10 → 81 frames
     if "198" in api:
         api["198"]["inputs"]["value"] = duration
+
+    # Seed — different per sampler so action progresses
+    resolved = seed if seed != -1 else int(time.time() * 1000) % (2**31)
+    samplers = sorted(
+        [(nid, n) for nid, n in api.items() if n.get("class_type") == "WanVideoSampler"],
+        key=lambda x: int(x[0]) if x[0].isdigit() else 0,
+    )
+    for idx, (_, node) in enumerate(samplers):
+        node["inputs"]["seed"] = (resolved + idx * 31337) % (2**31)
 
     return api
 
@@ -213,9 +299,9 @@ def upload_image(path: str, label: str) -> str:
     return res["name"]
 
 
-def queue_prompt(api_prompt: dict) -> tuple[str, str]:
+def queue_prompt(api_prompt: dict) -> tuple:
     client_id = str(uuid.uuid4())
-    payload   = json.dumps({"prompt": api_prompt, "client_id": client_id}).encode()
+    payload = json.dumps({"prompt": api_prompt, "client_id": client_id}).encode()
     req = urllib.request.Request(
         f"{COMFY_URL}/prompt", data=payload,
         headers={"Content-Type": "application/json"},
@@ -234,22 +320,24 @@ def wait_for_completion(prompt_id: str, client_id: str):
     try:
         while True:
             msg = ws.recv()
-            if isinstance(msg, str):
-                d = json.loads(msg)
-                if d.get("type") == "progress":
-                    v, m = d["data"]["value"], d["data"]["max"]
-                    print(f"\r  Progress: {v}/{m} steps     ", end="", flush=True)
-                elif d.get("type") == "executing":
-                    if (d["data"].get("prompt_id") == prompt_id
-                            and d["data"].get("node") is None):
-                        print("\n  Done!")
-                        break
-                elif d.get("type") == "execution_error":
-                    if d["data"].get("prompt_id") == prompt_id:
-                        raise RuntimeError(
-                            f"ComfyUI error on node {d['data'].get('node_id')}: "
-                            f"{d['data'].get('exception_message')}"
-                        )
+            if not isinstance(msg, str):
+                continue
+            d = json.loads(msg)
+            if d.get("type") == "progress":
+                v, m = d["data"]["value"], d["data"]["max"]
+                print(f"\r  Progress: {v}/{m} steps     ", end="", flush=True)
+            elif d.get("type") == "executing":
+                data = d["data"]
+                if data.get("prompt_id") == prompt_id and data.get("node") is None:
+                    print("\n  Done!")
+                    break
+            elif d.get("type") == "execution_error":
+                data = d["data"]
+                if data.get("prompt_id") == prompt_id:
+                    raise RuntimeError(
+                        f"ComfyUI error on node {data.get('node_id')}: "
+                        f"{data.get('exception_message')}"
+                    )
     finally:
         ws.close()
 
@@ -266,25 +354,19 @@ def get_outputs(prompt_id: str) -> list:
 
 
 def download(file_info: dict, out_dir: str) -> str:
-    fn     = file_info["filename"]
-    sub    = file_info.get("subfolder", "")
+    fn   = file_info["filename"]
+    sub  = file_info.get("subfolder", "")
     params = urllib.parse.urlencode({"filename": fn, "subfolder": sub, "type": "output"})
-    dest   = os.path.join(out_dir, fn)
+    dest = os.path.join(out_dir, fn)
     urllib.request.urlretrieve(f"{COMFY_URL}/view?{params}", dest)
     print(f"  Saved: {dest}")
     return dest
 
 # ─────────────────────────────────────────────────────────────
-#  Video helpers (ffmpeg)
+#  ffmpeg helpers
 # ─────────────────────────────────────────────────────────────
-import subprocess
-
 def extract_last_frame(video_path: str, out_jpg: str) -> str:
-    """
-    Extract the very last frame of a video into a JPEG.
-    Requires ffmpeg on PATH (always present when VHS is installed).
-    """
-    # -sseof -3  seeks 3 s before EOF to make last-frame capture fast
+    """Extract the very last frame of a video as JPEG."""
     r = subprocess.run(
         ["ffmpeg", "-y", "-sseof", "-3", "-i", video_path,
          "-frames:v", "1", "-update", "1", out_jpg],
@@ -296,10 +378,7 @@ def extract_last_frame(video_path: str, out_jpg: str) -> str:
 
 
 def concatenate_videos(paths: list, out_path: str) -> str:
-    """
-    Concatenate a list of MP4 clips into one file using ffmpeg concat demuxer.
-    Clips must have identical codec/resolution (they do — same workflow).
-    """
+    """Lossless concat via ffmpeg concat demuxer (identical codec/resolution)."""
     list_file = out_path + ".concat_list.txt"
     with open(list_file, "w") as f:
         for p in paths:
@@ -316,148 +395,150 @@ def concatenate_videos(paths: list, out_path: str) -> str:
 
 
 def rife_interpolate(input_path: str, output_path: str, target_fps: int = 32) -> str:
-    """
-    Interpolate frame rate using ffmpeg minterpolate (optical-flow, no extra deps).
-    Doubles 16fps → 32fps making motion smooth without extra GPU work.
-    Returns output_path on success, input_path on error (graceful fallback).
-    """
-    print(f"  RIFE minterpolate: {target_fps}fps → {output_path}")
+    """Optical-flow frame interpolation via ffmpeg minterpolate (CPU, no extra deps)."""
+    print(f"  minterpolate {WAN_FPS}fps → {target_fps}fps…")
     r = subprocess.run(
         ["ffmpeg", "-y", "-i", input_path,
          "-vf",
          f"minterpolate=fps={target_fps}:mi_mode=mci:"
          f"mc_mode=aobmc:me_mode=bidir:vsbmc=1",
-         "-r", str(target_fps),
-         output_path],
+         "-r", str(target_fps), output_path],
         capture_output=True, text=True,
     )
     if r.returncode != 0:
-        print(f"  [warn] minterpolate failed (falling back): {r.stderr[-300:]}")
+        print(f"  [warn] minterpolate failed — keeping original: {r.stderr[-300:]}")
         return input_path
     return output_path
-
 
 # ─────────────────────────────────────────────────────────────
 #  Main
 # ─────────────────────────────────────────────────────────────
 def main():
     p = argparse.ArgumentParser(
-        description="Wan2.2 Remix NSFW — chained iterative generation (WanVideoWrapper)"
+        description="Wan2.2 Remix NSFW — chained single-pass acts (81 frames each)"
     )
     p.add_argument("--face",       required=True,
-                   help="Face image — CLIPVision identity guidance (kept for all iterations)")
+                   help="Face image — CLIPVision identity (constant across all acts)")
     p.add_argument("--scene",      default=None,
-                   help="Start-frame image (defaults to face; subsequent iterations auto-use last frame)")
-    p.add_argument("--prompt",     default=DEFAULT_PROMPT)
+                   help="Start-frame image (defaults to face; subsequent acts use last frame)")
+    p.add_argument("--acts",       type=int, default=None,
+                   help="Number of acts to run (default: all 4)")
     p.add_argument("--negative",   default=DEFAULT_NEGATIVE)
     p.add_argument("--seed",       type=int, default=-1,
-                   help="Base seed (-1 = random). Each iteration uses seed + iter*31337.")
-    p.add_argument("--duration",   type=int, default=10,
-                   help="'a' value in frame formula a*16/2+1 per segment. Default 10 = 81 frames = 5s (Wan2.2 max).")
-    p.add_argument("--iterations", type=int, default=2,
-                   help="Chained runs (default 2 ≈ 20s). Each run = ~10s (2×81 frames @ 16fps).")
-    p.add_argument("--no-rife",    action="store_true",
-                   help="Skip RIFE frame interpolation (16fps→32fps) at the end."),
-    p.add_argument("--workflow",   default=str(SCRIPT_DIR / "nsfw.json"))
+                   help="Base seed (-1 = random). Each act advances by 31337.")
+    p.add_argument("--workflow",   default=str(SCRIPT_DIR / "nsfw.json"),
+                   help="Path to the ComfyUI GUI-format workflow JSON")
     p.add_argument("--output-dir", default="./outputs")
+    p.add_argument("--no-rife",    action="store_true",
+                   help="Skip RIFE frame interpolation (16fps → 32fps)")
     p.add_argument("--dump-api",   action="store_true",
-                   help="Write api_dump.json and exit (debug)")
+                   help="Write api_dump.json (act 1, post-strip) and exit")
     args = p.parse_args()
 
+    acts = DEFAULT_ACTS[: args.acts] if args.acts else DEFAULT_ACTS
+    num_acts = len(acts)
     os.makedirs(args.output_dir, exist_ok=True)
-
-    # Resolve base seed once; each iteration advances it
     base_seed = args.seed if args.seed != -1 else int(time.time() * 1000) % (2**31)
+    ts = time.strftime("%Y%m%d_%H%M%S")
 
-    # Load and convert workflow once (re-patched per iteration)
-    print("\n[init] Converting workflow…")
+    print(f"\n{'='*60}")
+    print(f"  Wan2.2 Remix NSFW")
+    print(f"  {num_acts} acts × {WAN_FRAMES} frames @ {WAN_FPS}fps = "
+          f"{num_acts * WAN_FRAMES / WAN_FPS:.0f}s raw")
+    print(f"  Face  : {args.face}")
+    print(f"  Seed  : {base_seed}")
+    print(f"{'='*60}")
+
+    # Load + convert workflow once (field names come from live /object_info)
+    print("\n[init] Loading workflow + querying /object_info…")
     with open(args.workflow) as f:
         gui_wf = json.load(f)
     base_api = gui_to_api(gui_wf)
 
+    # Strip Pipeline B → single 81-frame pass per run
+    base_api = strip_pipeline_b(base_api)
+    print(f"  Workflow loaded: {len(base_api)} nodes (Pipeline B stripped)")
+
     if args.dump_api:
+        dummy = copy.deepcopy(base_api)
+        dummy = patch_api(dummy, "face.jpg", "face.jpg", acts[0], args.negative, base_seed)
         with open("api_dump.json", "w") as f:
-            json.dump(base_api, f, indent=2, ensure_ascii=False)
-        print("  Written api_dump.json")
+            json.dump(dummy, f, indent=2, ensure_ascii=False)
+        print("  Written api_dump.json — exiting.")
         return
 
-    current_scene_path = args.scene or args.face
+    current_scene = args.scene or args.face
     clip_paths: list = []
-    ts = time.strftime("%Y%m%d_%H%M%S")
 
-    for it in range(1, args.iterations + 1):
-        iter_seed = (base_seed + (it - 1) * 31337) % (2**31)
+    for i, act_prompt in enumerate(acts, 1):
+        act_seed = (base_seed + (i - 1) * 31337) % (2**31)
 
-        print(f"\n{'='*55}")
-        print(f"  Segment {it}/{args.iterations}  |  duration-param={args.duration}")
-        print(f"  Face  : {args.face}")
-        print(f"  Scene : {current_scene_path}")
-        print(f"  Seed  : {iter_seed}")
-        print(f"{'='*55}")
+        print(f"\n{'─'*60}")
+        print(f"  Act {i}/{num_acts}")
+        print(f"  Prompt : {act_prompt[:90]}…")
+        print(f"  Scene  : {current_scene}")
+        print(f"  Seed   : {act_seed}")
+        print(f"{'─'*60}")
 
-        # Deep-copy API so each iteration starts from clean state
-        api = copy.deepcopy(base_api)
+        # Upload
+        print(f"\n[{i}.1] Uploading images…")
+        face_name= upload_image(args.face, "face")
+        scene_name = upload_image(current_scene, "scene")
 
-        # ── Upload images ──────────────────────────────────────────────────
-        print(f"\n[{it}.1] Uploading images…")
-        face_name  = upload_image(args.face,          "face")
-        scene_name = upload_image(current_scene_path, "scene")
-
-        # ── Patch ─────────────────────────────────────────────────────────
-        print(f"\n[{it}.2] Patching workflow…")
+        # Patch a fresh copy of the stripped API
+        print(f"\n[{i}.2] Patching…")
         api = patch_api(
-            api, face_name, scene_name,
-            args.prompt, args.negative,
-            iter_seed,
-            duration=args.duration,
+            copy.deepcopy(base_api),
+            face_name, scene_name,
+            act_prompt, args.negative,
+            act_seed,
         )
 
-        # ── Queue ─────────────────────────────────────────────────────────
-        print(f"\n[{it}.3] Queuing…")
+        # Queue
+        print(f"\n[{i}.3] Queuing…")
         pid, cid = queue_prompt(api)
 
-        # ── Generate ──────────────────────────────────────────────────────
-        print(f"\n[{it}.4] Generating…")
+        # Generate
+        print(f"\n[{i}.4] Generating…")
         wait_for_completion(pid, cid)
 
-        # ── Download ──────────────────────────────────────────────────────
+        # Download
         files = get_outputs(pid)
         if not files:
             print("  No outputs — check ComfyUI terminal.")
             sys.exit(1)
 
-        print(f"\n[{it}.5] Downloading…")
+        print(f"\n[{i}.5] Downloading…")
         saved = [download(fi, args.output_dir) for fi in files]
-        # Take the first video file as this iteration's clip
-        clip = next((p for p in saved if p.endswith((".mp4", ".webm", ".avi"))), saved[0])
+        clip= next((p for p in saved if p.endswith((".mp4", ".webm", ".avi"))), saved[0])
         clip_paths.append(clip)
-        print(f"  Clip {it}: {clip}")
+        print(f"  Act {i}: {clip}")
 
-        # ── Extract last frame for next iteration ─────────────────────────
-        if it < args.iterations:
-            last_frame = os.path.join(
-                args.output_dir, f"_last_frame_seg{it}_{ts}.jpg"
-            )
+        # Extract last frame for next act's start
+        if i < num_acts:
+            last_frame = os.path.join(args.output_dir, f"_last_frame_act{i}_{ts}.jpg")
             print(f"  Extracting last frame → {last_frame}")
             extract_last_frame(clip, last_frame)
-            current_scene_path = last_frame  # next segment starts here
+            current_scene = last_frame
 
-    # ── Concatenate if multiple iterations ────────────────────────────────
+    # Concatenate
     if len(clip_paths) > 1:
         final = os.path.join(args.output_dir, f"final_{ts}.mp4")
-        print(f"\n[concat] Joining {len(clip_paths)} runs → {final}")
+        print(f"\n[concat] Joining {len(clip_paths)} acts → {final}")
         concatenate_videos(clip_paths, final)
     else:
         final = clip_paths[0]
 
-    # ── RIFE interpolation: 16fps → 32fps ────────────────────────────────
+    # RIFE interpolation
     if not args.no_rife:
-        stem   = os.path.splitext(final)[0]
+        stem = os.path.splitext(final)[0]
         smooth = stem + "_32fps.mp4"
         print(f"\n[rife] Interpolating to 32fps…")
         final = rife_interpolate(final, smooth, target_fps=32)
 
-    print(f"\n✔  Final output: {final}")
+    print(f"\n✔  Final: {final}")
+    print(f"   ~{num_acts * WAN_FRAMES / WAN_FPS:.0f}s @ {WAN_FPS}fps raw"
+          f"{'  →  32fps with RIFE' if not args.no_rife else ''}")
 
 
 if __name__ == "__main__":
